@@ -4,6 +4,8 @@ import * as THREE from 'three';
 export const MOVEMENT_DEFAULTS = { walkSpeed: 150, runSpeed: 320, crouchSpeed: 60, jumpPower: 240, gravity: 600, airControl: 0.3, noclip: false };
 export const PREVIEW_STATES = ['idle', 'walk', 'run', 'crouch', 'crouch walk', 'jump'];
 
+const WEAPON_HOLDTYPES = { none: 'normal', weapon_pistol: 'pistol', weapon_357: 'revolver', weapon_smg1: 'smg', weapon_ar2: 'ar2', weapon_shotgun: 'shotgun', weapon_crossbow: 'crossbow', weapon_rpg: 'rpg', weapon_crowbar: 'melee', weapon_stunstick: 'melee', weapon_frag: 'grenade', weapon_bugbait: 'grenade', weapon_slam: 'slam', weapon_physcannon: 'physgun', weapon_physgun: 'physgun', gmod_tool: 'revolver', gmod_camera: 'camera', weapon_fists: 'fist' };
+
 export class Player {
   constructor() {
     this.pos = new THREE.Vector3();
@@ -23,11 +25,13 @@ export class Player {
     this.color = [0.24, 0.55, 1];
     this.weaponColor = [0.3, 1, 1];
     this.weapon = 'none';
-    this.holdtype = 'normal';
     this.ammo = { clip: 30, clipSize: 30, reserve: 90, secondary: 0 };
     this.weapons = [];
     this.preview = 'idle';
   }
+
+  /** Holdtype of the held weapon (Garry's Mod defaults). */
+  get holdtype() { return WEAPON_HOLDTYPES[this.weapon] || (this.weapon && this.weapon !== 'none' ? 'pistol' : 'normal'); }
 
   getEyeDir(out = new THREE.Vector3()) {
     const cp = Math.cos(this.eyePitch);

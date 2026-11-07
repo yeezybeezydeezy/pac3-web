@@ -13,6 +13,10 @@ const CLASS = {
   animation: 'animation', jiggle: 'jiggle', clip2: 'clip', clip: 'clip', material_3d: 'material', material: 'material',
   material_2d: 'material', material_eye_refract: 'material', material_refract: 'material', projectile: 'projectile',
   sunbeams: 'sunbeams', fog: 'fog', halo: 'halo', shake: 'shake', camera: 'camera', info: 'info', player_movement: 'movement',
+  custom_animation: 'custom_animation', gesture: 'gesture', holdtype: 'holdtype', poseparameter: 'poseparameter', flex: 'flex', faceposer: 'faceposer',
+  bodygroup: 'bodygroup', submaterial: 'submaterial', player_config: 'player_config', link: 'link', interpolated_multibone: 'interpolated_multibone',
+  motion_blur: 'motion_blur', projected_texture: 'projected_texture', decal: 'decal', effect: 'effect', woohoo: 'censor', weapon: 'weapon',
+  hitscan: 'hitscan', damage_zone: 'damage_zone', health_modifier: 'health_modifier', force: 'force', physics: 'physics', lock: 'lock', script: 'script',
 };
 // PAC3 defaults that differ from PAC3 Web's, applied when a saved outfit omits the key.
 const PAC_DEFAULTS = {
@@ -26,12 +30,18 @@ const PAC_DEFAULTS = {
   sound: { Path: '' },
   text: { Text: '', Outline: 0 },
   animation: { SequenceName: '' },
+  gesture: { GestureName: '' },
+  holdtype: { HoldType: '' },
+  projected_texture: { Texture: 'effects/flashlight/hard' },
+  decal: { Material: '' },
+  weapon: { Bone: 'right hand' },
 };
-const SPATIAL = new Set(['Position', 'PositionOffset', 'Scale', 'Gravity', 'ConstantVelocity']);
-const COLOR255 = { sprite: ['Color'], beam: ['StartColor', 'EndColor'], particles: ['Color1', 'Color2', 'StartAlpha', 'EndAlpha'], text: ['Color', 'OutlineColor'] };
+const SPATIAL = new Set(['Position', 'PositionOffset', 'Scale', 'Gravity', 'ConstantVelocity', 'AddedVectorForce', 'InitialVelocityVector', 'BoxScale']);
+const COLOR255 = { sprite: ['Color'], beam: ['StartColor', 'EndColor'], particles: ['Color1', 'Color2', 'StartAlpha', 'EndAlpha'], text: ['Color', 'OutlineColor'], decal: ['Color'] };
 const FONTS = { dermadefault: 'Arial', dermalarge: 'Arial', dermadefaultbold: 'Arial', closecaption_normal: 'Verdana', chatfont: 'Verdana', trebuchet24: 'Trebuchet MS', trebuchet18: 'Trebuchet MS', hudnumber5: 'Impact', default: 'Arial' };
 const SEQ_WORDS = [['dance', 'dance'], ['robot', 'robot'], ['wave', 'wave'], ['cheer', 'cheer'], ['salute', 'salute'], ['zombie', 'zombie'], ['sit', 'sit'], ['bow', 'bow'], ['laugh', 'clap'], ['muscle', 'flex'], ['pers', 'flex'], ['point', 'point'], ['swim', 'swim'], ['fly', 'fly'], ['lay', 'lay'], ['run', 'run'], ['walk', 'walk'], ['crouch', 'crouch'], ['jump', 'jump']];
 
+const NOT_REFS = new Set(['Name', 'SequenceName', 'GestureName', 'SlotName', 'BodyGroupName', 'VariableName', 'FromVariableName', 'ToVariableName', 'ModifierId']);
 const isVec = (v) => v && typeof v === 'object' && (v.$type === 'Vector' || v.$type === 'Angle' || v.$type === 'Color');
 const vec = (v) => (isVec(v) ? v.v.slice(0, 3) : Array.isArray(v) ? v.slice(0, 3) : typeof v === 'number' ? [v, v, v] : null);
 const srcToOurs = (v) => [v[1], v[2], v[0]];
@@ -69,7 +79,7 @@ export function importPac3(text) {
     for (const [k, raw] of Object.entries(src)) {
       if (k === 'ClassName') continue;
       if (/UID$/.test(k) && k !== 'UniqueID') { if (raw) self[k.slice(0, -3)] = String(raw); continue; }
-      if (/Name$/.test(k) && k !== 'Name' && byName.has(String(raw))) { self[k.slice(0, -4)] = String(byName.get(String(raw)).self.UniqueID || ''); continue; }
+      if (/Name$/.test(k) && !NOT_REFS.has(k) && byName.has(String(raw))) { self[k.slice(0, -4)] = String(byName.get(String(raw)).self.UniqueID || ''); continue; }
       let v = raw;
       if (isVec(v)) {
         v = vec(v);

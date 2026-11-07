@@ -3,7 +3,7 @@
 // Both use the same bone names, axes and attachments, so outfits line up the same on either.
 // The character faces +Z; its left side is +X. Units are Source units (about 72 tall).
 import * as THREE from 'three';
-import { clamp, lerp, smoothstep, setColor } from './core/util.js';
+import { clamp, lerp, smoothstep, setColor, DEG } from './core/util.js';
 import { getTexture } from './core/textures.js';
 import { loadSourceModel, loadAnimSet, toOurs, quatToOurs, mat34ToOurs, friendlyBoneName, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList, vfs } from './source/assets.js';
 import { buildMannequinAsset } from './mannequin.js';
@@ -163,6 +163,9 @@ const TO_SOURCE = {
   dance: 'taunt_dance', robot: 'taunt_robot', cheer: 'taunt_cheer', salute: 'gesture_salute', flex: 'taunt_muscle', zombie: 'taunt_zombie', wave: 'gesture_wave',
   bow: 'gesture_bow', clap: 'taunt_laugh', point: 'gesture_signal_forward', sit: 'sit_rollercoaster', sit_ground: 'sit_zen', lay: 'sit_zen', headbang: 'taunt_persistence', facepalm: 'gesture_disagree',
 };
+// Movement state -> GMod holdtype sequence prefix (idle_pistol, cwalk_ar2…), and holdtype -> sequence suffix.
+const HOLDTYPE_PREFIX = { idle: 'idle', walk: 'walk', run: 'run', crouch: 'cidle', crouch_walk: 'cwalk', jump: 'jump', fly: 'swimming', swim: 'swimming' };
+const HOLDTYPE_SUFFIX = { normal: 'all', smg: 'smg1', dual: 'duel' };
 // Source sequence names -> closest built-in procedural animation (when no game content is mounted).
 const PROC_WORDS = [['cwalk', 'crouch_walk'], ['cidle', 'crouch'], ['dance', 'dance'], ['robot', 'robot'], ['wave', 'wave'], ['cheer', 'cheer'], ['salute', 'salute'], ['zombie', 'zombie'], ['sit', 'sit'], ['bow', 'bow'], ['laugh', 'clap'], ['muscle', 'flex'], ['persistence', 'headbang'], ['point', 'point'], ['signal', 'point'], ['swim', 'swim'], ['fly', 'fly'], ['lay', 'lay'], ['run', 'run'], ['walk', 'walk'], ['crouch', 'crouch'], ['jump', 'jump'], ['idle', 'idle']];
 export function proceduralSequence(name) {
@@ -392,16 +395,31 @@ export class Avatar {
       } else L.pos.toArray(outPos, i * 3);
     }
   }
+  /** The sequence for a movement state: a holdtype part's own sequence, then the holdtype's set, then the default. */
+  _stateSequence(state, ht, holdtype) {
+    if (ht) {
+      const own = ht.seqs[state] && this.resolveSequence(ht.seqs[state]);
+      if (own) return own;
+    }
+    const type = (ht && ht.type) || holdtype;
+    if (type && type !== 'normal' && HOLDTYPE_PREFIX[state]) {
+      const r = this.resolveSequence(`${HOLDTYPE_PREFIX[state]}_${HOLDTYPE_SUFFIX[type] || type}`);
+      if (r) return r;
+    }
+    return (ht && ht.fallback && this.resolveSequence(ht.fallback)) || this.resolveSequence(state);
+  }
   _sourceAnimate(dt, player, anims, world) {
     const A = this.anim, S2 = this.source, T = S2.bones.length;
+    const fx = (world && world.fx) || {};
+    const pp = fx.poseParams || {};
     const speed = Math.hypot(player.vel.x, player.vel.z);
     const sy = Math.sin(player.bodyYaw), cy = Math.cos(player.bodyYaw);
     const fwd = player.vel.x * sy + player.vel.z * cy, left = player.vel.x * cy - player.vel.z * sy;
     const noclip = world && world.playMode && world.fx.movement && world.fx.movement.noclip;
     const state = noclip && !player.onGround ? 'fly' : !player.onGround ? 'jump' : player.crouching ? (speed > 10 ? 'crouch_walk' : 'crouch') : speed > 10 ? (speed > 130 ? 'run' : 'walk') : 'idle';
-    const base = this.resolveSequence(state);
+    const base = this._stateSequence(state, fx.holdtype, player.holdtype);
     if (!base) return false;
-    const params = { move_x: speed > 1 ? fwd / speed : 0, move_y: speed > 1 ? left / speed : 0, vertical_velocity: Math.max(-1, Math.min(1, player.vel.y / 300)) };
+    const params = { move_x: speed > 1 ? fwd / speed : 0, move_y: speed > 1 ? left / speed : 0, vertical_velocity: Math.max(-1, Math.min(1, player.vel.y / 300)), ...pp };
     const moving = (s) => /walk|run|fly/.test(s);
     if (state !== this._srcState) {
       // ease from the pose we were in
@@ -412,7 +430,7 @@ export class Avatar {
       this._srcState = state;
     }
     const gs = base.set.groundSpeed(base.seq);
-    const rate = moving(state) && gs > 1 ? Math.min(3, Math.max(0.3, speed / gs)) : 1;
+    const rate = (moving(state) && gs > 1 ? Math.min(3, Math.max(0.3, speed / gs)) : 1) * (fx.playerConfig ? Math.max(0, fx.playerConfig.animationRate) : 1);
     const prevCycle = A.cycle;
     A.cycle = (A.cycle + (dt * rate) / base.set.duration(base.seq)) % 1;
     this._toTarget(base.set, base.set.pose(base.seq, A.cycle, params), A.pos, A.quat);
@@ -422,8 +440,9 @@ export class Avatar {
       const r = this.resolveSequence(a.SequenceName);
       if (!r) continue;
       const P = r.set.pose(r.seq, a.cycle(1 / r.set.duration(r.seq)), params);
-      this._toTarget(r.set, P, A.tmpPos, A.tmpQuat);
       const w = clamp(a.Weight, 0, 1);
+      if (w <= 0) continue; // e.g. a gesture that has finished
+      this._toTarget(r.set, P, A.tmpPos, A.tmpQuat);
       const wl = r.seq.weights;
       for (let i = 0; i < T; i++) {
         const j = r.set.map[i];
@@ -450,8 +469,8 @@ export class Avatar {
     // look where the player looks
     this.root.updateMatrixWorld(true);
     let dyaw = player.eyeYaw - player.bodyYaw;
-    dyaw = clamp(Math.atan2(Math.sin(dyaw), Math.cos(dyaw)), -1.3, 1.3);
-    const pitch = clamp(player.eyePitch, -1.2, 1.2);
+    dyaw = clamp(Math.atan2(Math.sin(dyaw), Math.cos(dyaw)) + ((pp.head_yaw || 0) + (pp.aim_yaw || 0)) * DEG, -1.3, 1.3);
+    const pitch = clamp(player.eyePitch + ((pp.head_pitch || 0) + (pp.aim_pitch || 0)) * DEG, -1.2, 1.2);
     if (Math.abs(dyaw) > 1e-3 || Math.abs(pitch) > 1e-3) {
       const rq = this.root.quaternion, rqi = rq.clone().invert();
       for (const [name, k] of [['neck', 0.35], ['head', 0.65]]) {

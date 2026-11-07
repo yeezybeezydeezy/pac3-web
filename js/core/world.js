@@ -1,5 +1,5 @@
 // The world owns the part tree and runs the per-frame pipeline:
-// events -> visibility -> proxies -> avatar pose -> modifier parts -> everything else.
+// events -> visibility -> proxies -> avatar pose -> modifier parts (bones, custom animations) -> everything else.
 import { PartRegistry, instantiate } from './part.js';
 import { uid } from './util.js';
 
@@ -23,7 +23,7 @@ export class World {
     this.lastSound = null; // { name, time }
     this.colliders = []; // THREE.Box3 of world objects
     this.healthBars = [];
-    this.fx = { shake: 0, fog: null, camera: null, movement: null };
+    this.fx = { shake: 0, fog: null, camera: null, movement: null, holdtype: null, poseParams: {}, playerConfig: null };
     this._all = [];
     this._allDirty = true;
     this._proxied = new Map();
@@ -118,6 +118,9 @@ export class World {
     this.fx.camera = null;
     this.fx.movement = null;
     this.fx.entity = null;
+    this.fx.holdtype = null;
+    this.fx.poseParams = {};
+    this.fx.playerConfig = null;
 
     // A failing part reports its error instead of stopping the frame loop.
     const safe = (p, fn) => { try { fn(); } catch (e) { p.status = `Error: ${e.message}`.slice(0, 200); if (!p._errLogged) { p._errLogged = true; console.error('[pac3]', p.className, e); } } };
@@ -146,8 +149,10 @@ export class World {
     for (const [key, e] of this._proxied) if (!touched.has(key) && e.part.inWorld) e.part.restoreProxied(e.name);
     this._proxied = touched;
 
-    // 4. avatar pose (animation parts blend into it)
-    this.avatar.update(dt, this.player, all.filter((p) => p.className === 'animation' && !p.hiddenNow), this);
+    // 4. avatar pose: holdtype / pose parameter / player config parts set its inputs,
+    //    animation and gesture parts (anything with cycle()) blend sequences into it
+    for (const p of all) if (p.beforeAvatar && !p.hiddenNow) safe(p, () => p.beforeAvatar(this.fx));
+    this.avatar.update(dt, this.player, all.filter((p) => p.cycle && !p.hiddenNow), this);
 
     // 5. modifiers, then everything else in tree order
     for (const p of all) if (p.constructor.priority === 0) safe(p, () => p.update(dt));

@@ -5,6 +5,7 @@ import './effects.js';
 import './logic.js';
 import './physics.js';
 import './sound.js';
+import './extra.js';
 
 export const CATEGORIES = [
   ['generic', 'Generic'],

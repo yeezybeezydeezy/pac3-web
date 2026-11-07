@@ -66,7 +66,7 @@ export const help = {
       h('p', {}, h('b', { text: 'PAC3 Web' }), ' is a browser re-implementation of ', h('a', { href: 'https://github.com/CapsAdmin/pac3', target: '_blank', rel: 'noopener', text: 'PAC3' }), ' (Player Appearance Customizer 3) by CapsAdmin and contributors, the Garry\'s Mod outfit editor.'),
       h('p', { text: 'It recreates the part tree, part types, events, proxies and editor workflow on top of three.js with an original mannequin and procedurally generated textures and sounds. No game assets are included.' }),
       h('p', { text: 'With File → Game content you can mount your own Garry\'s Mod / Steam folders to use their models, materials, sounds, playermodels and animations, and import your PAC3 outfits. Files are read locally and never uploaded.' }),
-      h('p', { text: 'Not included: multiplayer wearing, Lua scripting, server-side parts (damage, physics, health), Source particle effects.' }),
+      h('p', { text: 'Every PAC3 part type is here. Not included: multiplayer wearing, running Lua (script parts keep their code), facial flexes, real Source particle systems (effect parts use built-in particles), and the custom-animation timeline editor. Gameplay parts act on your own player only.' }),
       h('p', { text: 'Licensed under the GNU GPL v3, like the original.' }));
     modal('About PAC3 Web', body);
   },

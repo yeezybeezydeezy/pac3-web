@@ -195,7 +195,7 @@ export const EXTRA_EVENTS = {
   map_name: { kind: 'string', op: 'find simple', args: 'name', help: 'Always "pac3web" here.', get: () => 'pac3web' },
   fov: { kind: 'number', op: 'above', args: 'degrees', help: 'Camera field of view.', get: (e) => e.world.camera.fov },
   health_lost: { kind: 'bool', args: 'amount', help: 'Briefly true when health drops by at least amount (change health in Player settings).', get: (e, a) => { const h = pl(e).health; if (e._hp != null && e._hp - h >= num(a[0] || 1)) e._hlUntil = now(e) + 0.25; e._hp = h; return now(e) < (e._hlUntil || 0); } },
-  holdtype: { kind: 'string', op: 'find simple', args: 'holdtype', help: 'Current holdtype (set by a holdtype part).', get: (e) => pl(e).holdtype || 'normal' },
+  holdtype: { kind: 'string', op: 'find simple', args: 'holdtype', help: 'Holdtype of the held weapon (Player settings).', get: (e) => pl(e).holdtype || 'normal' },
   using_physgun: { kind: 'bool', help: 'Holding weapon_physgun (Player settings).', get: (e) => pl(e).weapon === 'weapon_physgun' },
   eyetrace_entity_class: { kind: 'string', op: 'find simple', args: 'class', help: '"worldspawn" when you look at the ground, else empty.', get: (e) => (pl(e).eyePitch > 0.05 ? 'worldspawn' : '') },
   owner_max_health: { kind: 'number', op: 'above', args: 'health', help: 'Max health (Player settings).', get: (e) => pl(e).maxHealth },

@@ -11,15 +11,15 @@ It runs entirely in the browser with no build step (plain ES modules + [three.js
 - **Viewport**: orbit camera, move/rotate/scale gizmo, click-to-select, bone markers, animation preview (idle/walk/run/crouch/jump).
 - **Play mode**: third/first person, WASD/sprint/jump/crouch, mouse fire, flashlight, chat with speech bubbles, `pac_event` / `pac_proxy` commands, number-key event toggles.
 - **Saving**: autosave, named saves in the browser, JSON import/export, compressed share links.
-- **26 part types**:
+- **Every PAC3 part type** (50 here; PAC3's legacy and alternate class names such as `model2`, `bone3`, `material_3d`, `woohoo` map onto them):
 
 | Category | Parts |
 | --- | --- |
 | Generic | group, info |
-| Model & body | model (primitives or glTF/GLB/OBJ), bone, entity, animation, jiggle |
-| Effects | light, sprite, text, trail, beam, particles, sunbeams, halo, shake, camera, sound, projectile |
-| Modifiers | material, clip, fog, movement |
-| Logic | event, proxy, command |
+| Model & body | model (primitives, glTF/GLB/OBJ or Source `.mdl`), bone, entity, animation, custom_animation, gesture, holdtype, poseparameter, interpolated_multibone, weapon, jiggle, flex, faceposer |
+| Effects | light, sprite, text, trail, beam, particles, effect, sunbeams, halo, motion_blur, projected_texture, decal, censor, shake, camera, sound, projectile, hitscan, damage_zone, force, physics, lock |
+| Modifiers | material, submaterial, bodygroup, clip, fog, movement, player_config, health_modifier |
+| Logic | event, proxy, command, link, script |
 
 - **Events**: `is_crouching`, `is_on_ground`, `is_moving`, `is_running`, `is_firing`, `button`, `say`, `command` (pac_event), `timerx`, `random_timer`, `speed`, `health`, `animation`, `camera_distance` and more, with PAC3's operators and Invert semantics.
 - **Proxies**: Lua-flavoured expressions (`sin(time()*4)*10`, `hsv_to_color(time()*90,1,1)`, `x > 1 and 5 or 2`) or the easy setup (input → function → min/max). Driven values are never written into the saved outfit.
@@ -53,9 +53,10 @@ Then open the printed URL. Opening `index.html` straight from disk does not work
 PAC3 Web recreates the editor, part system, events and proxies, but it is not Garry's Mod:
 
 - Uses an original mannequin and procedurally generated textures and sounds. No Valve or Garry's Mod assets are included.
-- No multiplayer wearing, Lua scripting, or server-side parts (damage, physics, health modifiers).
-- Source models, materials, sounds and player animations load only from game folders you mount; Source particle effects (`.pcf`), detail textures, bodygroups and PAC3's "Showtime dynamics" are not supported.
-- Outfits are saved as JSON. PAC3 `.txt` outfits can be imported; a few PAC3-only parts (custom_animation, weapon, holdtype, submaterial) are skipped and their children kept.
+- No multiplayer wearing. Gameplay parts (hitscan, damage_zone, health_modifier, force, physics, lock) act on your own player and the play-mode world, since there is no server or other players.
+- `script` parts keep their Lua code but never run it, and `flex` / `faceposer` are kept but faces do not move (model flex data is not read yet).
+- Source models, materials, sounds and player animations load only from game folders you mount. `effect` parts approximate Source particle effects (`.pcf`) with built-in particles chosen from the effect name; detail textures and PAC3's "Showtime dynamics" are not supported.
+- Outfits are saved as JSON. PAC3 `.txt` outfits can be imported with every part type; custom animations load from their URL or Data in PAC3's format. The custom-animation timeline editor is not recreated.
 
 Imported outfits are treated as untrusted. They are size- and depth-limited, every property is type-checked, and proxy expressions run in a sandboxed evaluator (no `eval`).
 

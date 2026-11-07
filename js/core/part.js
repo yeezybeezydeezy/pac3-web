@@ -5,7 +5,7 @@ export const PartRegistry = new Map();
 export function registerPart(cls) { PartRegistry.set(cls.className, cls); return cls; }
 
 // Accept the class names used by PAC3 itself when importing JSON.
-export const CLASS_ALIASES = { model2: 'model', bone2: 'bone', bone3: 'bone', light2: 'light', trail2: 'trail', sound2: 'sound', clip2: 'clip', entity2: 'entity', material_3d: 'material' };
+export const CLASS_ALIASES = { model2: 'model', bone2: 'bone', bone3: 'bone', light2: 'light', trail2: 'trail', sound2: 'sound', clip2: 'clip', entity2: 'entity', material_3d: 'material', material_2d: 'material', material_refract: 'material', material_eye_refract: 'material', woohoo: 'censor' };
 
 /**
  * Property definition. Types: string, text, expression, number, boolean, vector, angle,

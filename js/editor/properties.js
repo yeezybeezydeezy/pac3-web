@@ -243,7 +243,7 @@ export class PropertiesView {
       sel.addEventListener('change', () => { set(sel.value); commit(); });
       return { control: sel, refresh: () => { if (ver !== this.structVersion) { ver = this.structVersion; build(); } if (document.activeElement !== sel) sel.value = get(); } };
     }
-    const dynamic = () => (def.type === 'bone' ? part.getBoneOptions ? part.getBoneOptions() : [] : def.name === 'VariableName' && part.getVariableOptions ? part.getVariableOptions() : def.name === 'SequenceName' && part.getSequenceOptions ? part.getSequenceOptions() : def.options || []);
+    const dynamic = () => (def.type === 'bone' ? part.getBoneOptions ? part.getBoneOptions() : [] : def.name === 'VariableName' && part.getVariableOptions ? part.getVariableOptions() : (def.sequence || def.name === 'SequenceName') && part.getSequenceOptions ? part.getSequenceOptions() : def.options || []);
     // Strict enums: a select
     if (def.type === 'enum' && !def.free && def.name !== 'VariableName') {
       const sel = h('select', { id, class: 'field' }, def.options.map((o) => h('option', { value: o, text: o || '(none)' })));
