@@ -6,6 +6,7 @@ import { showMenu, modal, prompt, confirm, toast } from './ui.js';
 import { storage, encodeShare } from './storage.js';
 import { EXAMPLES } from './examples.js';
 import { help } from './help.js';
+import { importText } from './content.js';
 
 export class Menus {
   constructor(app) { this.app = app; }
@@ -40,6 +41,9 @@ export class Menus {
     const ed = this.editor, app = this.app;
     const menus = {
       File: () => [
+        { label: 'Game content (GMod / Workshop)…', icon: '🎮', action: () => app.openContent() },
+        { label: 'Import PAC3 outfit…', action: () => app.openContent({ tab: 'outfits' }) },
+        '-',
         { label: 'New outfit', action: () => this.newOutfit() },
         { label: 'Examples', items: Object.keys(EXAMPLES).map((name) => ({ label: name, action: () => this.loadExample(name) })) },
         '-',
@@ -116,13 +120,14 @@ export class Menus {
     modal('Open from browser', list);
   }
   importFile(append) {
-    const input = h('input', { type: 'file', accept: '.json,.txt,application/json' });
+    const input = h('input', { type: 'file', accept: '.json,.txt,application/json,text/plain' });
     input.addEventListener('change', async () => {
       const f = input.files[0];
       if (!f) return;
       let data;
-      try { data = JSON.parse(await readFileAs(f)); }
-      catch { toast('That file is not PAC3 Web JSON. Garry\'s Mod PAC3 .txt outfits (Lua tables) are not supported yet.', 'error', 7000); return; }
+      const text = await readFileAs(f);
+      try { data = JSON.parse(text); }
+      catch { importText(this.app, text, f.name, append ? 'append' : 'replace'); return; } // a Garry's Mod PAC3 .txt outfit
       try {
         const warnings = append ? this.editor.appendOutfit(data, this.editor.selected) : this.editor.loadOutfit(data);
         toast(`Imported ${f.name}${warnings.length ? ` (${warnings.length} warning${warnings.length > 1 ? 's' : ''}: ${warnings[0]})` : ''}`, warnings.length ? 'warn' : 'ok', 5000);
@@ -155,11 +160,17 @@ export class Menus {
     const col = (label, key) => { const i = h('input', { type: 'color', value: rgbToHex(p[key]) }); i.addEventListener('input', () => { p[key] = hexToRgb(i.value); }); return h('label', { class: 'stack' }, h('span', { text: label }), i); };
     const name = h('input', { type: 'text', class: 'field', value: p.name, maxLength: 40 });
     name.addEventListener('input', () => { p.name = name.value; });
+    const weapon = h('input', { type: 'text', class: 'field', value: p.weapon, maxLength: 80, placeholder: 'none' });
+    weapon.addEventListener('input', () => { p.weapon = weapon.value.trim().toLowerCase() || 'none'; });
+    const weapons = h('input', { type: 'text', class: 'field', value: p.weapons.join(', '), maxLength: 800, placeholder: 'weapon_crowbar, dc17_extended' });
+    weapons.addEventListener('input', () => { p.weapons = weapons.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 50); });
     await modal('Player settings', h('div', { class: 'grid2' },
       h('label', { class: 'stack' }, h('span', { text: 'Name' }), name),
       num('Health', 'health', 100000), num('Max health', 'maxHealth', 100000), num('Armor', 'armor', 100000),
       col('Player color', 'color'), col('Weapon color', 'weaponColor'),
-      h('p', { class: 'muted span2', text: 'These feed proxy inputs (owner_health, player_color…) and events (health, armor) and text overrides.' })));
+      h('label', { class: 'stack' }, h('span', { text: 'Weapon held (weapon_class event)' }), weapon),
+      h('label', { class: 'stack' }, h('span', { text: 'Weapons carried (has_weapon event)' }), weapons),
+      h('p', { class: 'muted span2', text: 'These feed proxy inputs (owner_health, player_color…), events (health, armor, weapon_class, has_weapon) and text overrides.' })));
     this.app.saveSettings();
   }
 }

@@ -38,7 +38,7 @@ export class MovablePart extends Part {
     for (let p = this.parent; p; p = p.parent) if (p.constructor.movable) return p.getAnchorFor(this);
     const root = this.getRoot();
     if (root.rootAnchor) return root.rootAnchor;
-    return this.world.avatar.getBone(this.Bone);
+    return inSourceSpace(this) ? this.world.avatar.getBone(this.Bone) : this.world.avatar.getWebFrame(this.Bone);
   }
   /** Bone names valid for this part's Bone property. */
   getBoneOptions() {
@@ -84,6 +84,9 @@ export class MovablePart extends Part {
 
   destroy() { this.node.removeFromParent(); }
 }
+
+/** True when the part belongs to an outfit whose top-level group uses Source (PAC3) bone axes. */
+export function inSourceSpace(part) { return part.getRoot().CoordinateSpace === 'source'; }
 
 // Common appearance helpers for drawable parts.
 export function applyBlend(material, name) {

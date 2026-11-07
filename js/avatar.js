@@ -1,20 +1,23 @@
-// Procedural segmented mannequin with a named skeleton, procedural locomotion and
-// a library of animation sequences used by the animation part.
-// The character faces +Z; its left side is +X. Units are roughly inches (72 tall).
+// The avatar: an invisible pose rig that runs the procedural animation, mapped every frame onto a
+// ValveBiped-skeleton model — the built-in mannequin (js/mannequin.js) or a Garry's Mod playermodel.
+// Both use the same bone names, axes and attachments, so outfits line up the same on either.
+// The character faces +Z; its left side is +X. Units are Source units (about 72 tall).
 import * as THREE from 'three';
 import { clamp, lerp, smoothstep, setColor } from './core/util.js';
 import { getTexture } from './core/textures.js';
+import { loadSourceModel, loadAnimSet, toOurs, quatToOurs, mat34ToOurs, friendlyBoneName, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList, vfs } from './source/assets.js';
+import { buildMannequinAsset } from './mannequin.js';
 
 const TAU = Math.PI * 2;
 const S = Math.sin;
 
+// Pose rig: identity rest rotations, so pose rotations are easy to write. Never rendered.
 const BONE_DEFS = [
   ['pelvis', 'origin', [0, 38, 0]],
   ['spine', 'pelvis', [0, 4, 0]],
   ['chest', 'spine', [0, 8, 0]],
   ['neck', 'chest', [0, 10, 0]],
   ['head', 'neck', [0, 4, 0]],
-  ['eyes', 'head', [0, 4, 5]],
 ];
 for (const [side, s] of [['left', 1], ['right', -1]]) {
   BONE_DEFS.push(
@@ -28,7 +31,53 @@ for (const [side, s] of [['left', 1], ['right', -1]]) {
     [`${side} toe`, `${side} foot`, [0, -1.5, 5]],
   );
 }
-export const BONE_NAMES = ['origin', ...BONE_DEFS.map((b) => b[0])];
+const BONE_NAMES = ['origin', ...BONE_DEFS.map((b) => b[0])];
+
+// Rig bone -> ValveBiped friendly name; limbs also get a rest-direction correction (A/T-pose arms).
+const RIG_TO_VB = { pelvis: 'pelvis', spine: 'spine', chest: 'spine 2', neck: 'neck', head: 'head' };
+const LIMB_CHILD = {};
+for (const s of ['left', 'right']) {
+  for (const b of ['clavicle', 'upperarm', 'forearm', 'hand', 'thigh', 'calf', 'foot', 'toe']) RIG_TO_VB[`${s} ${b}`] = `${s} ${b}`;
+  Object.assign(LIMB_CHILD, { [`${s} upperarm`]: `${s} forearm`, [`${s} forearm`]: `${s} hand`, [`${s} thigh`]: `${s} calf`, [`${s} calf`]: `${s} foot`, [`${s} foot`]: `${s} toe` });
+}
+// Names some outfits use that a given model may lack.
+const ALIASES = {
+  chest: 'spine 2', 'spine 4': 'spine 2', 'spine 1': 'spine', eyes: 'head', mouth: 'head', nose: 'head', forward: 'pelvis',
+  'attach head': 'head', 'anim attachment head': 'head', 'hit position': 'eyes', lefteye: 'eyes', righteye: 'eyes',
+  'attach right hand': 'right hand', 'attach left hand': 'left hand', 'anim attachment right hand': 'right hand', 'anim attachment left hand': 'left hand',
+};
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v1 = new THREE.Vector3();
+
+/**
+ * Rest skeleton of a Source model in our axes. Playermodels are stored facing sideways (their
+ * animations turn them), so the roots are turned until the model's left side points along +X.
+ */
+function skeletonOf(mdl) {
+  const n = mdl.bones.length;
+  const local = mdl.bones.map((b) => ({ pos: new THREE.Vector3().fromArray(toOurs(b.pos)), quat: quatToOurs(b.quat) }));
+  const byName = new Map(mdl.bones.map((b, i) => [friendlyBoneName(b.name), i]));
+  const world = () => {
+    const worldQ = [], worldP = [];
+    for (let i = 0; i < n; i++) {
+      const p = mdl.bones[i].parent;
+      worldQ[i] = p >= 0 ? worldQ[p].clone().multiply(local[i].quat) : local[i].quat.clone();
+      worldP[i] = p >= 0 ? local[i].pos.clone().applyQuaternion(worldQ[p]).add(worldP[p]) : local[i].pos.clone();
+    }
+    return { worldQ, worldP };
+  };
+  let { worldQ, worldP } = world();
+  const l = byName.get('left thigh') ?? byName.get('left upperarm'), r = byName.get('right thigh') ?? byName.get('right upperarm');
+  if (l != null && r != null) {
+    const left = worldP[l].clone().sub(worldP[r]);
+    const yaw = Math.atan2(left.z, left.x);
+    if (Math.abs(yaw) > 0.01) {
+      const R0 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+      mdl.bones.forEach((b, i) => { if (b.parent < 0) { local[i].pos.applyQuaternion(R0); local[i].quat.premultiply(R0); } });
+      ({ worldQ, worldP } = world());
+    }
+  }
+  return { local, worldQ, worldP, byName };
+}
 
 // ---------- pose helpers ----------
 function blankPose() {
@@ -108,36 +157,51 @@ export const SEQUENCES = {
 };
 export const SEQUENCE_NAMES = Object.keys(SEQUENCES);
 
-// ---------- geometry ----------
-const sphereGeo = new THREE.SphereGeometry(1, 28, 18);
-const cap = (r, len) => new THREE.CapsuleGeometry(r, Math.max(0.01, len - 2 * r), 6, 16);
+// Built-in names -> Garry's Mod player sequences (used when game content is mounted).
+const TO_SOURCE = {
+  idle: 'idle_all_01', walk: 'walk_all', run: 'run_all_01', crouch: 'cidle_all', crouch_walk: 'cwalk_all', jump: 'jump_slam', fly: 'swimming_all', swim: 'swimming_all',
+  dance: 'taunt_dance', robot: 'taunt_robot', cheer: 'taunt_cheer', salute: 'gesture_salute', flex: 'taunt_muscle', zombie: 'taunt_zombie', wave: 'gesture_wave',
+  bow: 'gesture_bow', clap: 'taunt_laugh', point: 'gesture_signal_forward', sit: 'sit_rollercoaster', sit_ground: 'sit_zen', lay: 'sit_zen', headbang: 'taunt_persistence', facepalm: 'gesture_disagree',
+};
+// Source sequence names -> closest built-in procedural animation (when no game content is mounted).
+const PROC_WORDS = [['cwalk', 'crouch_walk'], ['cidle', 'crouch'], ['dance', 'dance'], ['robot', 'robot'], ['wave', 'wave'], ['cheer', 'cheer'], ['salute', 'salute'], ['zombie', 'zombie'], ['sit', 'sit'], ['bow', 'bow'], ['laugh', 'clap'], ['muscle', 'flex'], ['persistence', 'headbang'], ['point', 'point'], ['signal', 'point'], ['swim', 'swim'], ['fly', 'fly'], ['lay', 'lay'], ['run', 'run'], ['walk', 'walk'], ['crouch', 'crouch'], ['jump', 'jump'], ['idle', 'idle']];
+export function proceduralSequence(name) {
+  const n = String(name || '').toLowerCase();
+  if (Object.hasOwn(SEQUENCES, n)) return SEQUENCES[n];
+  const hit = PROC_WORDS.find(([w]) => n.includes(w));
+  return hit ? SEQUENCES[hit[1]] : null;
+}
+function blendBone(dPos, dQuat, sPos, sQuat, i, w) {
+  for (let k = 0; k < 3; k++) dPos[i * 3 + k] += (sPos[i * 3 + k] - dPos[i * 3 + k]) * w;
+  const o = i * 4;
+  let bx = sQuat[o], by = sQuat[o + 1], bz = sQuat[o + 2], bw = sQuat[o + 3];
+  if (dQuat[o] * bx + dQuat[o + 1] * by + dQuat[o + 2] * bz + dQuat[o + 3] * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
+  const x = dQuat[o] + (bx - dQuat[o]) * w, y = dQuat[o + 1] + (by - dQuat[o + 1]) * w, z = dQuat[o + 2] + (bz - dQuat[o + 2]) * w, ww = dQuat[o + 3] + (bw - dQuat[o + 3]) * w;
+  const l = Math.hypot(x, y, z, ww) || 1;
+  dQuat[o] = x / l; dQuat[o + 1] = y / l; dQuat[o + 2] = z / l; dQuat[o + 3] = ww / l;
+}
 
 export class Avatar {
   constructor(scene) {
     this.root = new THREE.Group();
     this.root.name = 'avatar';
     scene.add(this.root);
-    this.bones = { origin: this.root };
+    // invisible pose rig
+    this.rig = { origin: new THREE.Group() };
+    this.rig.origin.name = 'pose rig';
+    this.root.add(this.rig.origin);
     this.rest = {};
-    this.segments = {};
-    this.meshes = [];
-    this.mats = {
-      body: new THREE.MeshStandardMaterial({ color: 0xd5dae3, roughness: 0.45, metalness: 0.05 }),
-      dark: new THREE.MeshStandardMaterial({ color: 0x3a4250, roughness: 0.5, metalness: 0.1 }),
-      visor: new THREE.MeshStandardMaterial({ color: 0x0d1117, roughness: 0.15, metalness: 0.4 }),
-      eye: new THREE.MeshBasicMaterial({ color: 0x7fe3ff }),
-    };
-    this.baseColors = Object.fromEntries(Object.entries(this.mats).map(([k, m]) => [k, m.color.clone()]));
     for (const [name, parent, pos] of BONE_DEFS) {
-      const b = new THREE.Bone();
+      const b = new THREE.Object3D();
       b.name = name;
       b.position.fromArray(pos);
-      this.bones[parent].add(b);
-      this.bones[name] = b;
+      this.rig[parent].add(b);
+      this.rig[name] = b;
       this.rest[name] = new THREE.Vector3().fromArray(pos);
     }
     this.rest.origin = new THREE.Vector3();
-    this._buildBody();
+    this._rigRest = {};
+    for (const n of BONE_NAMES) { const v = new THREE.Vector3(); for (let b = this.rig[n]; b && b !== this.rig.origin; b = b.parent) v.add(this.rest[b.name]); this._rigRest[n] = v; }
     this.pose = blankPose();
     this._tmp = blankPose();
     this.time = 0;
@@ -148,76 +212,347 @@ export class Avatar {
     this._lastStepSign = 0;
     this.currentAnimation = 'idle';
     this.onFootstep = null;
+    this.onBonesChanged = null;
     this._appearanceKey = '';
+    this.playerModelStatus = '';
+    this.mannequin = buildMannequinAsset();
+    this._buildSource(this.mannequin, 0);
   }
 
-  _seg(bone, meshes) {
-    const g = new THREE.Group();
-    g.name = `${bone} mesh`;
-    for (const m of meshes) { m.castShadow = true; m.receiveShadow = true; m.userData.avatarBone = bone; g.add(m); this.meshes.push(m); }
-    this.bones[bone].add(g);
-    this.segments[bone] = g;
+  // ---------- bones ----------
+  getBone(name) {
+    const n = this.source.named;
+    return n.get(name) || n.get(ALIASES[name]) || n.get(ALIASES[ALIASES[name]]) || this.root;
   }
-  _mesh(geo, mat, pos = [0, 0, 0], scale = [1, 1, 1], rot = [0, 0, 0]) {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.fromArray(pos); m.scale.fromArray(scale); m.rotation.fromArray(rot);
-    return m;
+  getBoneNames() { return [...this.source.named.keys()]; }
+  /**
+   * A frame on a bone whose axes match the avatar's (X left, Y up, Z forward) in the rest pose.
+   * Outfits with CoordinateSpace "web" attach here; "source" outfits attach to the bone itself.
+   */
+  getWebFrame(name) {
+    const bone = this.getBone(name);
+    if (bone === this.root) return this.root;
+    let f = this._webFrames.get(bone);
+    if (!f) {
+      f = new THREE.Group();
+      f.name = `${bone.name} (web frame)`;
+      f.quaternion.copy(this.source.restQ.get(bone) || new THREE.Quaternion()).invert();
+      bone.add(f);
+      this._webFrames.set(bone, f);
+    }
+    return f;
   }
-  _buildBody() {
-    const { body, dark, visor, eye } = this.mats;
-    this._seg('pelvis', [this._mesh(sphereGeo, dark, [0, -0.5, 0], [6.4, 4.8, 4.4])]);
-    this._seg('spine', [this._mesh(sphereGeo, body, [0, 4, 0], [5.6, 5.4, 4.0])]);
-    this._seg('chest', [this._mesh(sphereGeo, body, [0, 5.5, 0], [8.2, 6.8, 5.0])]);
-    this._seg('neck', [this._mesh(new THREE.CylinderGeometry(2, 2.3, 5.5, 16), dark, [0, 2, 0])]);
-    const visorGeo = new THREE.SphereGeometry(1, 28, 10, Math.PI / 2 - 0.95, 1.9, 1.2, 0.55);
-    this._seg('head', [
-      this._mesh(sphereGeo, body, [0, 3.8, 0.2], [4.7, 5.6, 5.3]),
-      this._mesh(visorGeo, visor, [0, 3.8, 0.25], [4.85, 5.75, 5.45]),
-      this._mesh(sphereGeo, eye, [1.6, 4.25, 5.55], [0.65, 0.4, 0.25]),
-      this._mesh(sphereGeo, eye, [-1.6, 4.25, 5.55], [0.65, 0.4, 0.25]),
-    ]);
-    for (const side of ['left', 'right']) {
-      this._seg(`${side} upperarm`, [this._mesh(sphereGeo, dark, [0, 0, 0], [2.7, 2.7, 2.7]), this._mesh(cap(2.2, 11), body, [0, -5.5, 0])]);
-      this._seg(`${side} forearm`, [this._mesh(sphereGeo, dark, [0, 0, 0], [1.9, 1.9, 1.9]), this._mesh(cap(1.8, 10), body, [0, -5, 0])]);
-      this._seg(`${side} hand`, [this._mesh(sphereGeo, dark, [0, -2.8, 0.3], [1.5, 3, 2.3])]);
-      this._seg(`${side} thigh`, [this._mesh(cap(3.1, 18), body, [0, -8.5, 0])]);
-      this._seg(`${side} calf`, [this._mesh(sphereGeo, dark, [0, 0, 0], [2.7, 2.7, 2.7]), this._mesh(cap(2.5, 16.5), body, [0, -8, 0])]);
-      this._seg(`${side} foot`, [this._mesh(sphereGeo, dark, [0, -1.1, 2.2], [2.3, 1.5, 4.6])]);
+  getWebFrameQuat(name) { return this.getWebFrame(name).quaternion; }
+
+  // ---------- models ----------
+  /** Uses a Garry's Mod playermodel (.mdl from mounted content); '' = the built-in mannequin. */
+  async setPlayerModel(path, skin = 0, modifiers = '') {
+    if (!path) this.playerModelStatus = '';
+    const key = path ? `${path}#${skin}#${modifiers}` : '';
+    if (key === this._pmKey) return;
+    this._pmKey = key;
+    const token = (this._pmToken = (this._pmToken || 0) + 1);
+    this.playerModelStatus = '';
+    if (!path) { this._buildSource(this.mannequin, 0); return; }
+    try {
+      const asset = await loadSourceModel(path);
+      if (token !== this._pmToken) return;
+      this._buildSource(asset, skin, modifiers);
+    } catch (e) {
+      if (token !== this._pmToken) return;
+      this.playerModelStatus = e.message; // retried when new game content is mounted (reloadAnimations)
+      this._buildSource(this.mannequin, 0);
+    }
+  }
+  getBodygroups() { return this.source ? bodygroupList(this.source.asset.mdl) : []; }
+
+  _buildSource(asset, skin, modifiers = '') {
+    if (this.source && this.source.asset === asset && this.source.skin === skin && this.source.modifiers === modifiers) return;
+    if (this.source) { this.source.group.removeFromParent(); for (const m of this.source.meshes) m.material.dispose(); }
+    const { mdl } = asset;
+    const skel = skeletonOf(mdl);
+    const group = new THREE.Group();
+    group.name = 'model';
+    const bones = mdl.bones.map((b, i) => { const o = new THREE.Bone(); o.name = b.name; o.position.copy(skel.local[i].pos); o.quaternion.copy(skel.local[i].quat); return o; });
+    mdl.bones.forEach((b, i) => (b.parent >= 0 ? bones[b.parent] : group).add(bones[i]));
+    const skeleton = new THREE.Skeleton(bones, mdl.bones.map((b) => mat34ToOurs(b.poseToBone)));
+    const meshes = [];
+    const mods = parseModelModifiers(modifiers);
+    if (mods.skin != null) skin = mods.skin;
+    for (const g of asset.geoms) {
+      if (g.model !== bodygroupModel(mdl, g.bodyPart, mods)) continue;
+      const desc = asset.descs[skinMaterial(mdl, g.material, skin)] || {};
+      const mat = new THREE.MeshStandardMaterial({
+        map: desc.map || null, normalMap: desc.normalMap || null, alphaTest: desc.alphaTest || 0, transparent: !!desc.translucent,
+        roughness: desc.roughness ?? (desc.phong ? 0.45 : 0.75), metalness: desc.metalness ?? 0, side: desc.doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+      });
+      if (desc.normalMap) mat.normalScale.set(1, -1);
+      if (desc.color) mat.color.setRGB(desc.color[0], desc.color[1], desc.color[2], THREE.SRGBColorSpace);
+      if (desc.selfIllum) { mat.emissive.copy(mat.color); mat.emissiveMap = desc.map || null; }
+      const mesh = new THREE.SkinnedMesh(g.geometry, mat);
+      mesh.bind(skeleton, new THREE.Matrix4());
+      mesh.frustumCulled = false;
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData.materialName = desc.name || '';
+      group.add(mesh);
+      meshes.push(mesh);
+    }
+    const named = new Map([['origin', this.root]]);
+    const restQ = new Map();
+    bones.forEach((b, i) => { restQ.set(b, skel.worldQ[i]); const f = friendlyBoneName(mdl.bones[i].name); if (f && !named.has(f)) named.set(f, b); });
+    for (const a of mdl.attachments) {
+      const f = friendlyBoneName(a.name);
+      if (!f || named.has(f) || !bones[a.bone]) continue;
+      const o = new THREE.Object3D();
+      o.name = a.name;
+      mat34ToOurs(a.matrix).decompose(o.position, o.quaternion, o.scale);
+      bones[a.bone].add(o);
+      named.set(f, o);
+      restQ.set(o, skel.worldQ[a.bone].clone().multiply(o.quaternion));
+    }
+    this.root.add(group);
+    const map = [];
+    for (const [m, vb] of Object.entries(RIG_TO_VB)) { const i = skel.byName.get(vb); if (i != null) map[i] = m; }
+    const pelvis = skel.byName.get('pelvis');
+    this.source = {
+      asset, skin, modifiers, group, bones, meshes, named, restQ, skel, map, C: this._corrections(skel),
+      heightScale: pelvis != null ? skel.worldP[pelvis].y / 38 : 1,
+      parents: mdl.bones.map((b) => b.parent),
+      worldQ: bones.map(() => new THREE.Quaternion()),
+    };
+    this._webFrames = new Map();
+    this._appearanceKey = '';
+    this._loadAnims();
+    if (this.onBonesChanged) this.onBonesChanged();
+  }
+
+  // ---------- Source animations ----------
+  /** Loads the active model's animation sets (its $includemodel files, then the standard male set). */
+  async _loadAnims() {
+    const src = this.source;
+    const token = (this._animToken = (this._animToken || 0) + 1);
+    this.anim = null;
+    this._seqCache = new Map();
+    if (!vfs.mounted) return;
+    const paths = [...new Set([...(src.asset.mdl.includes || []), 'models/m_anm.mdl'])];
+    const sets = [];
+    for (const p of paths) { try { sets.push(await loadAnimSet(p)); } catch { /* not in mounted content */ } }
+    if (token !== this._animToken || this.source !== src || !sets.length) return;
+    const T = src.bones.length;
+    const index = new Map(src.asset.mdl.bones.map((b, i) => [b.name.toLowerCase(), i]));
+    const pelvis = src.skel.byName.get('pelvis');
+    const anim = { sets: [], pos: new Float32Array(T * 3), quat: new Float32Array(T * 4), tmpPos: new Float32Array(T * 3), tmpQuat: new Float32Array(T * 4), prevPos: new Float32Array(T * 3), prevQuat: new Float32Array(T * 4), blend: 1, cycle: 0 };
+    for (const set of sets) {
+      // per-model view of a shared, cached set: bone mapping and height scale
+      const map = new Int32Array(T).fill(-1);
+      set.bones.forEach((b, j) => { const i = index.get(b.name.toLowerCase()); if (i != null) map[i] = j; });
+      const ap = set.bones.find((b) => /pelvis/i.test(b.name));
+      anim.sets.push({ ...set, map, heightScale: pelvis != null && ap && ap.pos[2] > 1 ? src.skel.worldP[pelvis].y / ap.pos[2] : 1 });
+    }
+    this.anim = anim;
+    this._srcState = '';
+  }
+  /** After new game content is mounted: reload animations and retry a playermodel that failed. */
+  reloadAnimations() { if (this.playerModelStatus) this._pmKey = null; this._loadAnims(); }
+  /** Sequence names usable by animation parts (Source ones when game content is mounted). */
+  getSequenceNames() {
+    const out = new Set(SEQUENCE_NAMES);
+    if (this.anim) for (const set of this.anim.sets) for (const s of set.seqs.values()) if (!/(_layer|^aimlayer|_original$|_base$|^@|_pelvis)/.test(s.name.toLowerCase())) out.add(s.name);
+    return [...out];
+  }
+  /** Finds a Source sequence by name (or the GMod equivalent of a built-in name); taunts use their full-body layer. */
+  resolveSequence(name) {
+    if (!this.anim) return null;
+    const n = String(name || '').toLowerCase();
+    if (this._seqCache.has(n)) return this._seqCache.get(n);
+    let hit = null;
+    for (const cand of [n, TO_SOURCE[n]]) {
+      if (!cand || hit) continue;
+      for (const set of this.anim.sets) {
+        const empty = (q) => q && set.anims[q.grid[0]] && set.anims[q.grid[0]].flags & 0x20;
+        let s = set.seqs.get(cand);
+        if (s && (empty(s) || s.delta)) s = set.seqs.get(`${cand}_base`) || set.seqs.get(`${cand}_original`) || set.seqs.get(`${cand}_base_layer`) || (s.delta ? null : s);
+        if (s && !empty(s)) { hit = { set, seq: s }; break; }
+      }
+    }
+    this._seqCache.set(n, hit);
+    return hit;
+  }
+  /** Writes a Source pose into target-skeleton arrays (rotations from the animation, proportions from the model). */
+  _toTarget(set, pose, outPos, outQuat) {
+    const S2 = this.source, map = set.map;
+    for (let i = 0; i < S2.bones.length; i++) {
+      const j = map[i], L = S2.skel.local[i];
+      if (j < 0) { L.pos.toArray(outPos, i * 3); L.quat.toArray(outQuat, i * 4); continue; }
+      const q = pose.quat;
+      outQuat[i * 4] = q[j * 4 + 1]; outQuat[i * 4 + 1] = q[j * 4 + 2]; outQuat[i * 4 + 2] = q[j * 4]; outQuat[i * 4 + 3] = q[j * 4 + 3];
+      if (S2.parents[i] < 0) {
+        const p = pose.pos, hs = set.heightScale;
+        outPos[i * 3] = p[j * 3 + 1] * hs; outPos[i * 3 + 1] = p[j * 3 + 2] * hs; outPos[i * 3 + 2] = p[j * 3] * hs;
+      } else L.pos.toArray(outPos, i * 3);
+    }
+  }
+  _sourceAnimate(dt, player, anims, world) {
+    const A = this.anim, S2 = this.source, T = S2.bones.length;
+    const speed = Math.hypot(player.vel.x, player.vel.z);
+    const sy = Math.sin(player.bodyYaw), cy = Math.cos(player.bodyYaw);
+    const fwd = player.vel.x * sy + player.vel.z * cy, left = player.vel.x * cy - player.vel.z * sy;
+    const noclip = world && world.playMode && world.fx.movement && world.fx.movement.noclip;
+    const state = noclip && !player.onGround ? 'fly' : !player.onGround ? 'jump' : player.crouching ? (speed > 10 ? 'crouch_walk' : 'crouch') : speed > 10 ? (speed > 130 ? 'run' : 'walk') : 'idle';
+    const base = this.resolveSequence(state);
+    if (!base) return false;
+    const params = { move_x: speed > 1 ? fwd / speed : 0, move_y: speed > 1 ? left / speed : 0, vertical_velocity: Math.max(-1, Math.min(1, player.vel.y / 300)) };
+    const moving = (s) => /walk|run|fly/.test(s);
+    if (state !== this._srcState) {
+      // ease from the pose we were in
+      A.prevPos.set(A.pos);
+      A.prevQuat.set(A.quat);
+      A.blend = this._srcState ? 0 : 1;
+      if (!moving(state) || !moving(this._srcState)) A.cycle = 0;
+      this._srcState = state;
+    }
+    const gs = base.set.groundSpeed(base.seq);
+    const rate = moving(state) && gs > 1 ? Math.min(3, Math.max(0.3, speed / gs)) : 1;
+    const prevCycle = A.cycle;
+    A.cycle = (A.cycle + (dt * rate) / base.set.duration(base.seq)) % 1;
+    this._toTarget(base.set, base.set.pose(base.seq, A.cycle, params), A.pos, A.quat);
+    this.currentAnimation = base.seq.name;
+
+    for (const a of anims) {
+      const r = this.resolveSequence(a.SequenceName);
+      if (!r) continue;
+      const P = r.set.pose(r.seq, a.cycle(1 / r.set.duration(r.seq)), params);
+      this._toTarget(r.set, P, A.tmpPos, A.tmpQuat);
+      const w = clamp(a.Weight, 0, 1);
+      const wl = r.seq.weights;
+      for (let i = 0; i < T; i++) {
+        const j = r.set.map[i];
+        const wi = w * (wl && j >= 0 ? wl[j] : 1);
+        if (j >= 0 && wi > 0) blendBone(A.pos, A.quat, A.tmpPos, A.tmpQuat, i, wi);
+      }
+      this.currentAnimation = r.seq.name;
+    }
+    if (A.blend < 1) {
+      A.blend = Math.min(1, A.blend + dt / 0.2);
+      const t = A.blend * A.blend * (3 - 2 * A.blend);
+      A.tmpPos.set(A.pos);
+      A.tmpQuat.set(A.quat);
+      A.pos.set(A.prevPos);
+      A.quat.set(A.prevQuat);
+      for (let i = 0; i < T; i++) blendBone(A.pos, A.quat, A.tmpPos, A.tmpQuat, i, t);
+    }
+    for (let i = 0; i < T; i++) {
+      const b = S2.bones[i];
+      b.position.fromArray(A.pos, i * 3);
+      b.quaternion.fromArray(A.quat, i * 4);
+      b.scale.set(1, 1, 1);
+    }
+    // look where the player looks
+    this.root.updateMatrixWorld(true);
+    let dyaw = player.eyeYaw - player.bodyYaw;
+    dyaw = clamp(Math.atan2(Math.sin(dyaw), Math.cos(dyaw)), -1.3, 1.3);
+    const pitch = clamp(player.eyePitch, -1.2, 1.2);
+    if (Math.abs(dyaw) > 1e-3 || Math.abs(pitch) > 1e-3) {
+      const rq = this.root.quaternion, rqi = rq.clone().invert();
+      for (const [name, k] of [['neck', 0.35], ['head', 0.65]]) {
+        const b = S2.named.get(name);
+        if (!b || !b.isBone || !b.parent) continue;
+        const look = _q1.setFromEuler(new THREE.Euler(pitch * k, dyaw * k, 0, 'YXZ'));
+        const wq = b.getWorldQuaternion(new THREE.Quaternion());
+        const target = rq.clone().multiply(look).multiply(rqi).multiply(wq);
+        b.quaternion.copy(b.parent.getWorldQuaternion(_q2).invert().multiply(target));
+        b.updateMatrixWorld(true);
+      }
+    }
+    // footsteps twice per walk/run cycle
+    if (/walk|run/.test(state) && player.onGround && Math.floor(A.cycle * 2) !== Math.floor(prevCycle * 2) && this.onFootstep) this.onFootstep();
+    S2.group.visible = !this.hidden;
+    return true;
+  }
+
+  /** Rotations turning a model's rest limb directions into the rig's (arms down instead of A/T-pose). */
+  _corrections(skel) {
+    const C = {};
+    for (const m of BONE_NAMES) {
+      const si = skel.byName.get(RIG_TO_VB[m]);
+      const child = LIMB_CHILD[m];
+      const ci = child ? skel.byName.get(RIG_TO_VB[child]) : undefined;
+      if (si != null && ci != null) {
+        const ds = skel.worldP[ci].clone().sub(skel.worldP[si]).normalize();
+        const dm = this._rigRest[child].clone().sub(this._rigRest[m]).normalize();
+        C[m] = new THREE.Quaternion().setFromUnitVectors(ds, dm);
+      } else if (/(hand|toe)$/.test(m) && this.rig[m]) C[m] = (C[this.rig[m].parent.name] || new THREE.Quaternion()).clone();
+      else C[m] = new THREE.Quaternion();
+    }
+    return C;
+  }
+
+  /** Copies the rig's animation onto the model's skeleton. */
+  _retarget() {
+    const S2 = this.source;
+    const rootInv = _q2.copy(this.root.quaternion).invert();
+    const worldQ = S2.worldQ;
+    for (let i = 0; i < S2.bones.length; i++) {
+      const b = S2.bones[i], p = S2.parents[i];
+      b.position.copy(S2.skel.local[i].pos);
+      b.scale.set(1, 1, 1);
+      const m = S2.map[i];
+      if (m) {
+        this.rig[m].getWorldQuaternion(_q1).premultiply(rootInv);
+        const target = _q1.multiply(S2.C[m]).multiply(S2.skel.worldQ[i]);
+        b.quaternion.copy(p >= 0 ? worldQ[p].clone().invert().multiply(target) : target);
+        worldQ[i].copy(target);
+        if (m === 'pelvis') { const d = this.pose.pelvis.p; b.position.add(_v1.set(d[0], d[1], d[2]).multiplyScalar(S2.heightScale)); }
+      } else {
+        b.quaternion.copy(S2.skel.local[i].quat);
+        worldQ[i].copy(p >= 0 ? worldQ[p] : new THREE.Quaternion()).multiply(b.quaternion);
+      }
     }
   }
 
-  getBone(name) { return this.bones[name] || this.root; }
-  getBoneNames() { return BONE_NAMES; }
-
+  // ---------- appearance ----------
   /** Entity part settings (or defaults when none is active). */
   setAppearance(a) {
-    const key = JSON.stringify(a);
+    this.setPlayerModel(a.model || '', a.skin || 0, a.modifiers || '');
+    const key = JSON.stringify(a) + (this._pmKey || '') + this.source.skin;
     if (key === this._appearanceKey) return;
     this._appearanceKey = key;
-    const tex = getTexture(a.material);
-    for (const [k, m] of Object.entries(this.mats)) {
-      if (k === 'eye') continue;
-      m.color.copy(this.baseColors[k]);
-      if (k === 'body' || k === 'dark') { const c = setColor(new THREE.Color(), a.color, a.brightness); m.color.multiply(c); }
-      m.map = k === 'visor' ? null : tex;
-      m.wireframe = a.wireframe;
-      m.needsUpdate = true;
-    }
-    for (const m of Object.values(this.mats)) {
-      m.opacity = a.alpha;
-      m.transparent = a.alpha < 1;
-      m.depthWrite = a.alpha >= 1;
-    }
+    this._applyMaterials(a);
     this.hidden = a.hide;
     this.scale = [a.size * a.scale[0], a.size * a.scale[1], a.size * a.scale[2]];
   }
+  /** Entity color/alpha/material plus material parts (matched by MaterialOverride). */
+  _applyMaterials(a) {
+    const c = new THREE.Color();
+    for (const mesh of this.source.meshes) {
+      const m = mesh.material;
+      const o = (mesh.userData.orig ||= { map: m.map, normalMap: m.normalMap, color: m.color.clone(), emissive: m.emissive.clone(), emissiveMap: m.emissiveMap, roughness: m.roughness, metalness: m.metalness, transparent: m.transparent });
+      const mp = (a.materials || []).find((x) => x.matches(mesh.userData.materialName)) || null;
+      m.map = mp && mp.BaseTexture ? getTexture(mp.BaseTexture) : a.material ? getTexture(a.material) : o.map;
+      m.normalMap = mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
+      if (m.normalMap) m.normalScale.set(1, -1);
+      m.color.copy(o.color).multiply(setColor(c, a.color, a.brightness));
+      if (mp) m.color.multiply(setColor(c, mp.Color));
+      m.roughness = mp ? mp.Roughness : o.roughness;
+      m.metalness = mp ? mp.Metalness : o.metalness;
+      if (mp) { setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); m.emissiveMap = null; } else { m.emissive.copy(o.emissive); m.emissiveMap = o.emissiveMap; }
+      m.opacity = a.alpha * (mp ? mp.Alpha : 1);
+      m.transparent = o.transparent || m.opacity < 1;
+      m.depthWrite = m.opacity >= 1;
+      m.wireframe = a.wireframe || !!(mp && mp.Wireframe);
+      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.transparent}`;
+      if (sig !== mesh.userData.sig) { mesh.userData.sig = sig; m.needsUpdate = true; }
+    }
+  }
 
+  // ---------- animation ----------
   update(dt, player, anims, world) {
     this.time += dt;
     this.root.position.copy(player.pos);
     this.root.rotation.set(0, player.bodyYaw, 0);
     const sc = this.scale || [1, 1, 1];
     this.root.scale.set(sc[0], sc[1], sc[2]);
+    if (this.anim && this._sourceAnimate(dt, player, anims, world)) return;
     const P = this.pose;
     resetPose(P);
     const q = Q(P);
@@ -237,7 +572,6 @@ export class Avatar {
     if (this.crouch > 0.01) crouchPose(q, this.crouch);
     if (this.air > 0.01) airPose(q, this.air);
 
-    // footsteps
     const sign = Math.sign(S(this.phase));
     if (w > 0.4 && player.onGround && sign !== this._lastStepSign && sign !== 0) { this._lastStepSign = sign; if (this.onFootstep) this.onFootstep(); }
 
@@ -245,7 +579,7 @@ export class Avatar {
 
     // animation parts override / blend
     for (const a of anims) {
-      const seq = SEQUENCES[a.SequenceName];
+      const seq = proceduralSequence(a.SequenceName);
       if (!seq) continue;
       const T = this._tmp;
       resetPose(T);
@@ -265,14 +599,15 @@ export class Avatar {
     const pitch = clamp(player.eyePitch, -1.2, 1.2);
     q.r('neck', pitch * 0.35, dy * 0.4).r('head', pitch * 0.65, dy * 0.6);
 
-    // write pose
+    // write the rig, then copy it onto the model
     for (const n of BONE_NAMES) {
       if (n === 'origin') continue;
-      const b = this.bones[n], d = P[n];
+      const b = this.rig[n], d = P[n];
       b.position.set(this.rest[n].x + d.p[0], this.rest[n].y + d.p[1], this.rest[n].z + d.p[2]);
       b.rotation.set(d.r[0], d.r[1], d.r[2], 'XYZ');
-      b.scale.set(1, 1, 1);
     }
-    for (const g of Object.values(this.segments)) { g.scale.set(1, 1, 1); g.visible = !this.hidden; }
+    this.root.updateMatrixWorld(true);
+    this._retarget();
+    this.source.group.visible = !this.hidden;
   }
 }

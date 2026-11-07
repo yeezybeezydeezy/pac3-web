@@ -1,6 +1,7 @@
 // Procedural textures (generated on canvases) plus URL textures. Single entry point: getTexture().
 import * as THREE from 'three';
 import { isUrl } from './util.js';
+import { getSourceTexture, isGamePath } from '../source/assets.js';
 
 const cache = new Map();
 const loader = new THREE.TextureLoader();
@@ -86,10 +87,14 @@ export const TRAIL_TEXTURES = [...Object.keys(TRAILS), 'smoke', 'glow', 'rainbow
 export const ALL_TEXTURES = [...SPRITE_TEXTURES, ...SURFACE_TEXTURES, ...Object.keys(TRAILS)];
 const GENERATORS = { ...SPRITES, ...SURFACES, ...TRAILS };
 
-/** Returns a shared texture for a generated name or a URL (null for empty/unknown). */
-export function getTexture(name) {
+/**
+ * Returns a shared texture for a generated name, an image URL, a .vtf URL or a game material/texture
+ * path (resolved from mounted game folders). Null for empty/unknown names.
+ */
+export function getTexture(name, opts = {}) {
   name = String(name || '').trim();
   if (!name) return null;
+  if (/\.vtf(\?|#|$)/i.test(name) || isGamePath(name)) return getSourceTexture(name, opts);
   if (cache.has(name)) return cache.get(name);
   let tex = null;
   if (isUrl(name)) {

@@ -171,6 +171,23 @@ export class World {
       return `pac_proxy ${parts[0]} = ${n}`;
     }
     if (cmd === 'say') { this.say(parts.join(' ')); return null; }
+    if (cmd === 'pac_wipe_events') { this.pacEvents.clear(); this.emit('pac_event'); return 'pac events cleared'; }
+    if (cmd === 'pac_event_sequenced') {
+      // pac_event_sequenced <name> [+|-|set N]: steps through events named name1, name2, ...
+      const name = parts[0];
+      if (!name) return 'usage: pac_event_sequenced <name> [+|-|set <n>]';
+      const seq = [...new Set(this.allParts.filter((p) => p.className === 'event' && p.Event === 'command').map((p) => p.Arguments.split('@@')[0].trim()))]
+        .filter((n) => n.startsWith(name) && /^\d+$/.test(n.slice(name.length))).sort((a, b) => Number(a.slice(name.length)) - Number(b.slice(name.length)));
+      if (!seq.length) return `no events named ${name}1, ${name}2…`;
+      let cur = seq.findIndex((n) => this.pacEvents.get(n));
+      const op = (parts[1] || '+').toLowerCase();
+      cur = op === 'set' ? Math.max(0, Number(parts[2]) - 1) : op === '-' ? (cur - 1 + seq.length) % seq.length : (cur + 1) % seq.length;
+      for (const n of seq) this.pacEvents.set(n, false);
+      this.pacEvents.set(seq[cur % seq.length], true);
+      this.emit('pac_event');
+      return `pac_event_sequenced ${seq[cur % seq.length]}`;
+    }
+    if (cmd.startsWith('pac_')) return `${cmd} is not supported here (ignored)`;
     return `unknown command: ${cmd}`;
   }
 

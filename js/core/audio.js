@@ -1,5 +1,7 @@
 // Web Audio engine: lazily created context, cached buffers, built-in synthesized sounds.
 import { isUrl } from './util.js';
+import { readGameSound, vfs } from '../source/assets.js';
+import { decodeWav } from '../source/wav.js';
 
 const TAU = Math.PI * 2;
 const env = (t, a, d) => (t < a ? t / a : Math.max(0, 1 - (t - a) / d));
@@ -74,9 +76,24 @@ export class AudioEngine {
       if (synth) { const d = buf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = fn(i / sr, r); }
       else buf.copyToChannel(fn(n, sr, r), 0);
       p = Promise.resolve(buf);
-    } else if (isUrl(path)) {
-      p = fetch(path).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); }).then((b) => ctx.decodeAudioData(b));
-    } else p = Promise.reject(new Error(`unknown sound "${path.slice(0, 60)}"`));
+    } else {
+      // URL or a game sound path from mounted folders ("ambient/alarms/klaxon1.wav")
+      p = (async () => {
+        let bytes;
+        if (isUrl(path)) { const r = await fetch(path); if (!r.ok) throw new Error(`HTTP ${r.status}`); bytes = new Uint8Array(await r.arrayBuffer()); }
+        else {
+          bytes = await readGameSound(path);
+          if (!bytes) throw new Error(vfs.mounted ? `sound not found: ${path.slice(0, 80)}` : `"${path.slice(0, 60)}" needs mounted game content (File → Game content)`);
+        }
+        const wav = decodeWav(bytes); // handles the ADPCM .wav files browsers cannot play
+        if (wav && wav.channels[0] && wav.channels[0].length) {
+          const buf = ctx.createBuffer(wav.channels.length, wav.channels[0].length, wav.sampleRate);
+          wav.channels.forEach((d, i) => buf.copyToChannel(d, i));
+          return buf;
+        }
+        return ctx.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      })();
+    }
     p.catch(() => this.buffers.delete(path));
     this.buffers.set(path, p);
     return p;

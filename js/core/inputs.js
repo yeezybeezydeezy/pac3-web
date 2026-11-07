@@ -42,6 +42,9 @@ const MATH = {
   if_else: (_c, cond, a, b) => (num(cond) > 0 ? num(a) : num(b)),
   hsv_to_color: M((h, s = 1, v = 1) => hsv(h, s, v)),
   vec: (_c, ...a) => a.map(num),
+  // used by imported PAC3 outfits: Source (x fwd, y left, z up) vector order -> ours, and 0-255 colors
+  src_vec: (_c, ...a) => (a.length >= 3 ? [num(a[1]), num(a[2]), num(a[0])] : [num(a[0]), num(a[0]), num(a[0])]),
+  div255: (_c, ...a) => a.map((x) => num(x) / 255),
 };
 
 // Player / world inputs (ctx-aware).
@@ -108,9 +111,42 @@ const INPUTS = {
   sequenced_event_number: () => 0,
 };
 
+// PAC3 "extra" expressions: var1()..var5() read this proxy's ExtraN result; with an argument they
+// read another proxy's (by UniqueID or Name).
+for (let i = 1; i <= 5; i++) {
+  INPUTS[`var${i}`] = INPUTS[`extra${i}`] = (c, ref) => {
+    if (ref == null) return (c.extraOut && c.extraOut[i - 1]) || 0;
+    const key = String(ref);
+    c._refCache ||= new Map();
+    let p = c._refCache.get(key);
+    if (!p || !p.inWorld) {
+      p = c.world.allParts.find((x) => x.className === 'proxy' && (x.UniqueID === key || x.Name === key)) || null;
+      c._refCache.set(key, p);
+    }
+    return (p && p.extraOut && p.extraOut[i - 1]) || 0;
+  };
+}
+
+// PAC3 if_event(event uid or name, a = 0, b = 1): a while that event is hiding its target, else b.
+INPUTS.event_alternative = INPUTS.if_event = INPUTS.if_else_event = (c, ref, a = 0, b = 1) => {
+  if (ref == null) return 0;
+  const key = String(ref);
+  c._refCache ||= new Map();
+  let p = c._refCache.get(`event|${key}`);
+  if (!p || !p.inWorld) {
+    p = c.world.allParts.find((x) => x.className === 'event' && (x.UniqueID === key || x.Name === key)) || null;
+    c._refCache.set(`event|${key}`, p);
+  }
+  return p ? (p.triggered ? num(a) : num(b)) : 0;
+};
+// Ambient light at the part: there is no light probe here, so it reads as fully lit.
+INPUTS.light_value = () => 1;
+INPUTS.light_amount = () => [1, 1, 1];
+INPUTS.light_amount_r = INPUTS.light_amount_g = INPUTS.light_amount_b = () => 1;
+
 export const PROXY_FUNCTIONS = { ...MATH, ...INPUTS };
-export const PROXY_CONSTANTS = { pi: Math.PI, huge: 1e9 };
-export const PROXY_INPUT_NAMES = Object.keys(INPUTS).filter((n) => !/^feedback_|^stime$|^ftime$/.test(n));
+export const PROXY_CONSTANTS = { pi: Math.PI, PI: Math.PI, huge: 1e9, e: Math.E };
+export const PROXY_INPUT_NAMES = Object.keys(INPUTS).filter((n) => !/^feedback_|^stime$|^ftime$|^extra\d$/.test(n));
 export const EASY_FUNCTIONS = {
   none: (x) => x, sin: Math.sin, cos: Math.cos, tan: Math.tan, abs: Math.abs, sgn: Math.sign,
   nsin: (x) => Math.sin(x) * 0.5 + 0.5, ncos: (x) => Math.cos(x) * 0.5 + 0.5, nsin2: (x) => Math.abs(Math.sin(x)),
@@ -154,6 +190,15 @@ export const EVENTS = {
   command: { kind: 'bool', args: 'event name', help: 'Toggled with "pac_event <name>" in chat, HUD buttons or number keys.', get: (e, a) => !!e.world.pacEvents.get(String(a[0] || '').trim()) },
   say: { kind: 'string', op: 'find simple', args: 'text@@seconds', help: 'Something matching was said in chat recently.', get: (e, a) => (e.world.time - e.world.chat.time < num(a[1] || 4) ? e.world.chat.text : null) },
   animation: { kind: 'string', op: 'find simple', args: 'animation name', help: 'Current animation (idle, walk, run, crouch, jump, or an animation part).', get: (e) => e.world.avatar.currentAnimation },
+  sequence_name: { kind: 'string', op: 'find simple', args: 'animation name', help: 'Same as animation (PAC3 name).', get: (e) => e.world.avatar.currentAnimation },
+  is_typing: { kind: 'bool', help: 'The chat box is open (T in play mode).', get: (e) => !!e.world.typing },
+  viewed_by_owner: { kind: 'bool', help: 'True when you are looking at your own outfit (always, here). Uninvert to hide from yourself.', get: () => true },
+  weapon_class: { kind: 'string', op: 'find simple', args: 'weapon class', help: 'The weapon you are holding (set in Player settings).', get: (e) => e.world.player.weapon || 'none' },
+  has_weapon: { kind: 'bool', args: 'weapon class', help: 'You carry this weapon (Player settings → weapons).', get: (e, a) => e.world.player.weapons.includes(String(a[0] || '').trim().toLowerCase()) },
+  is_sitting: { kind: 'bool', help: 'A sit animation is playing.', get: (e) => /sit/.test(e.world.avatar.currentAnimation) },
+  is_in_noclip: { kind: 'bool', help: 'A movement part with Noclip is active in play mode.', get: (e) => !!(e.world.fx.movement && e.world.fx.movement.noclip) },
+  model_name: { kind: 'string', op: 'find simple', args: 'model path', help: 'The player model in use (an entity part Model, or "mannequin").', get: (e) => (e.world.fx.entity && e.world.fx.entity.model) || 'mannequin' },
+  owner_health: { kind: 'number', op: 'below', args: 'health', help: 'Same as health (PAC3 name).', get: (e) => e.world.player.health },
 };
 
 export function compareEvent(value, op, arg, kind) {

@@ -22,6 +22,8 @@ export class Player {
     this.maxArmor = 100;
     this.color = [0.24, 0.55, 1];
     this.weaponColor = [0.3, 1, 1];
+    this.weapon = 'none';
+    this.weapons = [];
     this.preview = 'idle';
   }
 
@@ -35,7 +37,7 @@ export class Player {
     if (!world.playMode) {
       // Editor preview: animate in place.
       const pr = this.preview;
-      const speed = pr === 'walk' ? mv.walkSpeed : pr === 'run' ? mv.runSpeed : pr === 'crouch walk' ? mv.crouchSpeed : 0;
+      const speed = pr === 'walk' ? 80 : pr === 'run' ? 220 : pr === 'crouch walk' ? 50 : 0; // preview speeds, like Garry's Mod walk / run
       this.vel.set(Math.sin(this.bodyYaw) * speed, 0, Math.cos(this.bodyYaw) * speed);
       this.crouching = pr.startsWith('crouch');
       this.running = pr === 'run';

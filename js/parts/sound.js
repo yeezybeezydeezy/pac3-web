@@ -14,7 +14,7 @@ export class SoundPart extends MovablePart {
   static description = 'Plays a sound when shown. Use a built-in sound or an audio URL/upload (mp3, ogg, wav).';
   static removeProps = ['EyeAngles', 'AimPart'];
   static props = [
-    prop('Path', 'asset', 'beep', { options: BUILTIN_SOUNDS, accept: 'audio/*' }),
+    prop('Path', 'asset', 'beep', { options: BUILTIN_SOUNDS, accept: 'audio/*', browse: 'sound', help: 'Built-in sound, audio URL, or a game sound path like ambient/alarms/klaxon1.wav (needs mounted content).' }),
     prop('AllPaths', 'string', '', { help: 'Several sounds separated by ; — one is picked each play.' }),
     prop('Sequential', 'boolean', false, { help: 'Pick AllPaths in order instead of randomly.' }),
     prop('Volume', 'number', 1, { group: 'playback', min: 0, max: 4, step: 0.05 }),

@@ -9,6 +9,7 @@ import { MovablePart, applyBlend, BLEND_MODES } from './movable.js';
 import { prop, registerPart } from '../core/part.js';
 import { getTexture, SURFACE_TEXTURES } from '../core/textures.js';
 import { isUrl, setColor } from '../core/util.js';
+import { loadSourceModel, isSourceModelPath, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList } from '../source/assets.js';
 
 const TAU = Math.PI * 2;
 
@@ -81,6 +82,26 @@ export function loadModelAsset(url) {
   return p;
 }
 
+/**
+ * PAC3 "Materials" list: one entry per material slot, separated by ";". Each entry is the Name of a
+ * material part in the same outfit, a texture path/URL, or empty / no_material / null.
+ * Returns [{part} | {texture} | null] by slot index.
+ */
+export function resolveMaterialList(part, list) {
+  if (!list || !list.trim()) return [];
+  let named = null;
+  return list.split(';').map((raw) => {
+    const e = raw.trim();
+    if (!e || e === 'no_material' || e === 'null') return null;
+    if (!named) {
+      named = new Map();
+      part.getRoot().traverse((p) => { if (p.className === 'material' && p.Name && !p.hiddenNow) named.set(p.Name.toLowerCase(), p); });
+    }
+    const mp = named.get(e.toLowerCase());
+    return mp ? { part: mp } : { texture: e };
+  });
+}
+
 const MAT_CLASSES = { standard: THREE.MeshStandardMaterial, unlit: THREE.MeshBasicMaterial, toon: THREE.MeshToonMaterial, normals: THREE.MeshNormalMaterial };
 export const SHADINGS = Object.keys(MAT_CLASSES);
 const _c = new THREE.Color();
@@ -91,13 +112,16 @@ export class ModelPart extends MovablePart {
   static category = 'model';
   static description = 'Displays a 3D model: a built-in primitive or a glTF/GLB/OBJ file from a URL or upload.';
   static props = [
-    prop('Model', 'asset', 'cube', { options: PRIMITIVE_NAMES, accept: '.glb,.gltf,.obj', help: 'Primitive name, or a URL to a .glb/.gltf/.obj file.' }),
+    prop('Model', 'asset', 'cube', { options: PRIMITIVE_NAMES, accept: '.glb,.gltf,.obj', browse: 'model', help: 'Primitive name, a URL to a .glb/.gltf/.obj file, or a game model path like models/player/items/humans/top_hat.mdl (needs mounted game content).' }),
     prop('Size', 'number', 1, { group: 'orientation', step: 0.05 }),
     prop('Scale', 'vector', [1, 1, 1], { group: 'orientation', step: 0.05 }),
     prop('Color', 'color', [1, 1, 1], { group: 'appearance' }),
     prop('Brightness', 'number', 1, { group: 'appearance', min: 0, step: 0.05 }),
     prop('Alpha', 'number', 1, { group: 'appearance', min: 0, max: 1, step: 0.02 }),
-    prop('Material', 'asset', '', { group: 'appearance', options: ['', ...SPECIAL, ...SURFACE_TEXTURES], accept: 'image/*', help: 'Texture name or image URL, or a special look: wireframe, chrome, glass, glow, toon, normals.' }),
+    prop('Material', 'asset', '', { group: 'appearance', options: ['', ...SPECIAL, ...SURFACE_TEXTURES], accept: 'image/*,.vtf', browse: 'material', help: 'Texture name or image URL, or a special look: wireframe, chrome, glass, glow, toon, normals.' }),
+    prop('Skin', 'number', 0, { group: 'appearance', min: 0, integer: true, help: 'Material set of a Source (.mdl) model.' }),
+    prop('ModelModifiers', 'bodygroups', '', { group: 'appearance', help: 'Bodygroups (and skin) of a Source model, PAC3 style: "head=1;skin=2;".' }),
+    prop('Materials', 'string', '', { group: 'appearance', help: 'Per material slot, separated by ";": the Name of a material part in this outfit, a texture path/URL, or no_material (PAC3 style).' }),
     prop('TextureScale', 'number', 1, { group: 'appearance', step: 0.1 }),
     prop('Roughness', 'number', 0.55, { group: 'appearance', min: 0, max: 1, step: 0.02 }),
     prop('Metalness', 'number', 0, { group: 'appearance', min: 0, max: 1, step: 0.02 }),
@@ -124,6 +148,8 @@ export class ModelPart extends MovablePart {
   }
 
   getChildBoneNames() { return Object.keys(this.modelBones); }
+  /** Bodygroups of the loaded Source model, for the editor. */
+  getBodygroups() { return this.sourceModel && isSourceModelPath(this.Model) ? bodygroupList(this.sourceModel) : []; }
   getAnchorFor(child) { return (child.Bone && this.modelBones[child.Bone.toLowerCase()]) || this.childAnchor; }
 
   _applyScale() { const s = this.Size; this.content.scale.set(s * this.Scale[0], s * this.Scale[1], s * this.Scale[2]); }
@@ -136,10 +162,20 @@ export class ModelPart extends MovablePart {
     this.content.clear();
   }
 
-  _addMesh(mesh) {
+  /** extra: Source material description (name, normalMap, alphaTest, translucent, additive, doubleSide, unlit, selfIllum, color). */
+  _addMesh(mesh, extra = null) {
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     mats.forEach((om, i) => {
-      const orig = { map: (om && om.map) || null, color: om && om.color ? om.color.clone() : new THREE.Color(1, 1, 1), flat: !!mesh.userData.flat };
+      const orig = {
+        map: (om && om.map) || null, normalMap: (om && om.normalMap) || null,
+        color: om && om.color ? om.color.clone() : new THREE.Color(1, 1, 1), flat: !!mesh.userData.flat,
+        name: ((om && om.name) || '').toLowerCase(),
+        index: extra && extra.index != null ? extra.index : this.slots.length,
+      };
+      if (extra) {
+        Object.assign(orig, { map: extra.map || null, normalMap: extra.normalMap || null, name: extra.name || '', alphaTest: extra.alphaTest || 0, translucent: !!extra.translucent, additive: !!extra.additive, doubleSide: !!extra.doubleSide, unlit: !!extra.unlit, selfIllum: !!extra.selfIllum, source: true });
+        orig.color = extra.color ? new THREE.Color().setRGB(extra.color[0], extra.color[1], extra.color[2], THREE.SRGBColorSpace) : new THREE.Color(1, 1, 1);
+      }
       const slot = Array.isArray(mesh.material)
         ? { mesh, orig, get: () => mesh.material[i], set: (m) => { mesh.material[i] = m; } }
         : { mesh, orig, get: () => mesh.material, set: (m) => { mesh.material = m; } };
@@ -163,6 +199,26 @@ export class ModelPart extends MovablePart {
       this._addMesh(mesh);
       this.content.add(mesh);
       this.status = '';
+      return;
+    }
+    if (isSourceModelPath(name)) {
+      this.status = 'Loading model…';
+      loadSourceModel(name).then((asset) => {
+        if (token !== this._loadToken) return;
+        this.sourceModel = asset.mdl;
+        const mods = parseModelModifiers(this.ModelModifiers);
+        const skin = mods.skin ?? this.Skin;
+        for (const g of asset.geoms) {
+          if (g.model !== bodygroupModel(asset.mdl, g.bodyPart, mods)) continue;
+          const mesh = new THREE.Mesh(g.geometry, null);
+          const index = skinMaterial(asset.mdl, g.material, skin);
+          this._addMesh(mesh, { ...(asset.descs[index] || { name: '' }), index });
+          this.content.add(mesh);
+        }
+        this.status = '';
+        this.meshVersion++;
+        this._dirty = true;
+      }).catch((err) => { if (token === this._loadToken) this.status = String(err.message || err).slice(0, 200); });
       return;
     }
     if (!isUrl(name)) { this.status = name ? `Unknown model "${name.slice(0, 60)}"` : ''; return; }
@@ -191,63 +247,78 @@ export class ModelPart extends MovablePart {
 
   onPropChanged(name, old) {
     super.onPropChanged(name, old);
-    if (name === 'Model') this._load();
+    if (name === 'Model' || ((name === 'Skin' || name === 'ModelModifiers') && isSourceModelPath(this.Model))) this._load();
     else if (name === 'Size' || name === 'Scale') this._applyScale();
     else this._dirty = true;
   }
 
   _apply() {
     this._dirty = false;
-    const mp = this.children.find((c) => c.className === 'material' && !c.hiddenNow);
+    const mps = this.children.filter((c) => c.className === 'material' && !c.hiddenNow);
     const clips = this.children.filter((c) => c.className === 'clip' && !c.hiddenNow).map((c) => c.plane);
     const kw = this.Material.trim().toLowerCase();
     const special = SPECIAL.includes(kw) ? kw : '';
-    const texName = mp && mp.BaseTexture ? mp.BaseTexture : special ? '' : this.Material;
-    const overrideTex = getTexture(texName);
-    let shading = this.NoLighting || special === 'glow' ? 'unlit' : special === 'toon' ? 'toon' : special === 'normals' ? 'normals' : 'standard';
-    if (mp && mp.Shading !== 'default') shading = mp.Shading;
-    const Cls = MAT_CLASSES[shading];
-    let alpha = this.Alpha * (mp ? mp.Alpha : 1);
-    if (special === 'glass') alpha *= 0.35;
-    const transparent = alpha < 1 || this.Translucent || this.BlendMode !== 'normal';
-    const rep = this.TextureScale * (mp ? mp.TextureScale : 1);
-    const scroll = mp ? mp.scroll : null;
+    const baseTex = special ? null : getTexture(this.Material);
+    const slotList = resolveMaterialList(this, this.Materials);
+    this._namedMats = slotList.some((e) => e && e.part);
 
     for (const slot of this.slots) {
+      const o = slot.orig;
+      const entry = slotList[o.index] || null;
+      const mp = mps.find((p) => p.matches(o.name)) || (entry && entry.part) || null;
+      const overrideTex = (mp && mp.BaseTexture ? getTexture(mp.BaseTexture) : null) || (entry && entry.texture ? getTexture(entry.texture) : null) || baseTex;
+      let shading = this.NoLighting || special === 'glow' || o.unlit ? 'unlit' : special === 'toon' ? 'toon' : special === 'normals' ? 'normals' : 'standard';
+      if (mp && mp.Shading !== 'default') shading = mp.Shading;
+      const Cls = MAT_CLASSES[shading];
+      let alpha = this.Alpha * (mp ? mp.Alpha : 1);
+      if (special === 'glass') alpha *= 0.35;
+      const blend = this.BlendMode === 'normal' && o.additive ? 'additive' : this.BlendMode;
+      const transparent = alpha < 1 || this.Translucent || blend !== 'normal' || !!o.translucent;
+      const rep = this.TextureScale * (mp ? mp.TextureScale : 1);
+      const scroll = mp ? mp.scroll : null;
+
       let m = slot.get();
       if (!m || m.constructor !== Cls) { if (m && m.dispose) m.dispose(); m = new Cls(); slot.set(m); slot.sig = ''; }
-      let tex = overrideTex || slot.orig.map;
+      let tex = overrideTex || o.map;
+      if (tex && tex.userData.pending) this._dirty = true; // game texture still decoding: re-apply later
       if (tex && (rep !== 1 || (scroll && (scroll[0] || scroll[1])))) {
         if (!tex.image) this._dirty = true; // not loaded yet: retry next frame
         else {
-          if (slot.texSrc !== tex) { if (slot.texClone) slot.texClone.dispose(); slot.texClone = tex.clone(); slot.texSrc = tex; }
+          if (slot.texSrc !== tex || slot.texVer !== tex.version) { if (slot.texClone) slot.texClone.dispose(); slot.texClone = tex.clone(); slot.texSrc = tex; slot.texVer = tex.version; }
           slot.texClone.repeat.set(rep, rep);
           slot.texClone.offset.set(scroll ? scroll[0] : 0, scroll ? scroll[1] : 0);
           tex = slot.texClone;
         }
       }
       if ('map' in m) m.map = tex || null;
+      const nrm = mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
+      if ('normalMap' in m) {
+        m.normalMap = shading === 'standard' ? nrm || null : null;
+        if (m.normalMap && (o.source || (mp && mp.BumpMap))) m.normalScale.set(1, -1); // Source normal maps are DirectX style
+      }
       if (m.color) {
         setColor(m.color, this.Color, this.Brightness);
-        if (!overrideTex) m.color.multiply(slot.orig.color);
+        if (!overrideTex) m.color.multiply(o.color);
         if (mp) m.color.multiply(setColor(_c, mp.Color));
       }
       if (m.isMeshStandardMaterial) {
         m.roughness = mp ? mp.Roughness : special === 'chrome' ? 0.08 : special === 'glass' ? 0.04 : this.Roughness;
         m.metalness = mp ? mp.Metalness : special === 'chrome' ? 1 : this.Metalness;
-        if (mp) setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); else m.emissive.setRGB(0, 0, 0);
+        if (mp) setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); else if (o.selfIllum) m.emissive.setRGB(1, 1, 1); else m.emissive.setRGB(0, 0, 0);
+        m.emissiveMap = o.selfIllum && !mp ? tex || null : null;
       }
       if ('flatShading' in m) m.flatShading = !!(mp && mp.FlatShading);
       m.wireframe = special === 'wireframe' || !!(mp && mp.Wireframe);
       m.opacity = alpha;
       m.transparent = transparent;
-      applyBlend(m, this.BlendMode);
+      m.alphaTest = o.alphaTest || 0;
+      applyBlend(m, blend);
       m.depthTest = !this.IgnoreZ;
-      m.depthWrite = !transparent;
-      m.side = this.Invert ? THREE.BackSide : this.NoCulling || slot.orig.flat ? THREE.DoubleSide : THREE.FrontSide;
+      m.depthWrite = !transparent || !!o.alphaTest;
+      m.side = this.Invert ? THREE.BackSide : this.NoCulling || o.flat || o.doubleSide ? THREE.DoubleSide : THREE.FrontSide;
       m.clippingPlanes = clips.length ? clips : null;
       m.clipShadows = true;
-      const sig = `${!!m.map}|${m.flatShading}|${clips.length}|${m.premultipliedAlpha}|${m.side}|${m.transparent}`;
+      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.alphaTest > 0}|${m.flatShading}|${clips.length}|${m.premultipliedAlpha}|${m.side}|${m.transparent}`;
       if (sig !== slot.sig) { slot.sig = sig; m.needsUpdate = true; }
       slot.mesh.renderOrder = this.IgnoreZ ? 1000 : transparent ? 1 : 0;
       slot.mesh.castShadow = alpha >= 0.5 && shading !== 'unlit';
@@ -256,7 +327,7 @@ export class ModelPart extends MovablePart {
 
   update(dt) {
     super.update(dt);
-    if (this._dirty) this._apply();
+    if (this._dirty || this._namedMats) this._apply(); // named material parts can change (proxies) at any time
     if (this.mixer && this.PlayAnimation && !this.hiddenNow) this.mixer.update(dt);
   }
 

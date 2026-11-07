@@ -29,17 +29,10 @@ export class Viewport {
     this.raycaster = new THREE.Raycaster();
     this.raycaster.camera = camera;
     this.markers = [];
-    const mGeo = new THREE.SphereGeometry(1, 12, 8);
+    this.markerGeo = new THREE.SphereGeometry(1, 12, 8);
     this.markerMat = new THREE.MeshBasicMaterial({ color: 0xffc94a, depthTest: false, transparent: true, opacity: 0.9 });
     this.markerHot = new THREE.MeshBasicMaterial({ color: 0x4ad8ff, depthTest: false });
-    for (const name of world.avatar.getBoneNames()) {
-      const m = new THREE.Mesh(mGeo, this.markerMat);
-      m.renderOrder = 2000;
-      m.userData.boneName = name;
-      m.visible = false;
-      world.avatar.getBone(name).add(m);
-      this.markers.push(m);
-    }
+    this.buildMarkers();
     this.showBones = false;
     this.picking = null;
     this.label = h('div', { class: 'bone-label', hidden: true });
@@ -56,6 +49,21 @@ export class Viewport {
     editor.on('select', () => this.attachGizmo());
     this.buildToolbar(toolbar, onPlay);
     this.setMode('translate');
+  }
+
+  /** One clickable marker per avatar bone (rebuilt when a playermodel replaces the mannequin). */
+  buildMarkers() {
+    for (const m of this.markers) m.removeFromParent();
+    this.markers = [];
+    const av = this.world.avatar;
+    for (const name of av.getBoneNames()) {
+      const m = new THREE.Mesh(this.markerGeo, this.markerMat);
+      m.renderOrder = 2000;
+      m.userData.boneName = name;
+      m.visible = false;
+      av.getBone(name).add(m);
+      this.markers.push(m);
+    }
   }
 
   buildToolbar(el, onPlay) {

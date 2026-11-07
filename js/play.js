@@ -109,12 +109,13 @@ export class PlayMode {
     this.chatLog.replaceChildren(...this.chatLines.map((l) => h('div', { text: l })));
   }
   openChat() {
+    this.world.typing = true;
     this.chatInput.hidden = false;
     this.chatInput.value = '';
     if (document.pointerLockElement) document.exitPointerLock();
     this.chatInput.focus();
   }
-  closeChat() { this.chatInput.hidden = true; this.chatInput.blur(); }
+  closeChat() { this.world.typing = false; this.chatInput.hidden = true; this.chatInput.blur(); }
   send(text) {
     text = text.trim();
     if (!text) return;
@@ -153,7 +154,7 @@ export class PlayMode {
     } else if (w.firstPerson) {
       cam.position.copy(_v).addScaledVector(_d, 3);
       cam.lookAt(_r.copy(cam.position).add(_d));
-      if (av.segments.head) av.segments.head.visible = false;
+      av.getBone("head").scale.setScalar(0.001); // hide the head from the inside
     } else {
       _r.set(-Math.cos(p.eyeYaw), 0, Math.sin(p.eyeYaw));
       cam.position.copy(this.pivot).addScaledVector(_d, -this.dist).addScaledVector(_r, -this.dist * 0.12);

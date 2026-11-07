@@ -64,7 +64,7 @@ export class SpritePart extends MovablePart {
   static description = 'A camera-facing image (glow, flare, star…).';
   static removeProps = NO_AIM;
   static props = [
-    prop('SpritePath', 'asset', 'glow', { options: SPRITE_TEXTURES, accept: 'image/*' }),
+    prop('SpritePath', 'asset', 'glow', { options: SPRITE_TEXTURES, accept: 'image/*,.vtf', browse: 'texture' }),
     prop('Size', 'number', 10, { group: 'orientation', step: 0.5 }),
     prop('SizeX', 'number', 1, { group: 'orientation', step: 0.05 }),
     prop('SizeY', 'number', 1, { group: 'orientation', step: 0.05 }),
@@ -205,7 +205,7 @@ export class TrailPart extends MovablePart {
   static description = 'Leaves a fading ribbon behind as it moves. Best seen in play mode.';
   static removeProps = NO_AIM;
   static props = [
-    prop('TrailPath', 'asset', 'laser', { options: TRAIL_TEXTURES, accept: 'image/*' }),
+    prop('TrailPath', 'asset', 'laser', { options: TRAIL_TEXTURES, accept: 'image/*,.vtf', browse: 'texture' }),
     prop('Duration', 'number', 1, { min: 0.05, step: 0.1, help: 'Seconds a point lives.' }),
     prop('Spacing', 'number', 2, { min: 0.1, step: 0.5, help: 'Units between points.' }),
     prop('StartSize', 'number', 4, { group: 'appearance', min: 0, step: 0.5 }),
@@ -274,7 +274,7 @@ export class BeamPart extends MovablePart {
   static removeProps = NO_AIM;
   static props = [
     prop('EndPoint', 'part', ''),
-    prop('Material', 'asset', 'laser', { options: TRAIL_TEXTURES, accept: 'image/*' }),
+    prop('Material', 'asset', 'laser', { options: TRAIL_TEXTURES, accept: 'image/*,.vtf', browse: 'texture' }),
     prop('Bend', 'number', 10, { step: 1 }),
     prop('Resolution', 'number', 16, { min: 2, max: 128, integer: true }),
     prop('Width', 'number', 2, { group: 'appearance', min: 0, step: 0.25 }),
@@ -357,7 +357,7 @@ export class ParticlesPart extends MovablePart {
   static description = 'Emits particles forward (+Z): fire, smoke, sparks, magic. Particles live in the world.';
   static removeProps = NO_AIM;
   static props = [
-    prop('Material', 'asset', 'glow', { options: ALL_TEXTURES, accept: 'image/*' }),
+    prop('Material', 'asset', 'glow', { options: ALL_TEXTURES, accept: 'image/*,.vtf', browse: 'texture' }),
     prop('FireDelay', 'number', 0.05, { group: 'emission', min: 0.005, step: 0.01, help: 'Seconds between bursts.' }),
     prop('NumberParticles', 'number', 1, { group: 'emission', min: 1, max: 200, integer: true }),
     prop('FireOnce', 'boolean', false, { group: 'emission', help: 'Emit one burst when shown.' }),

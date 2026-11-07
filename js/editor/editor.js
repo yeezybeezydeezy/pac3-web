@@ -47,6 +47,8 @@ export class Editor {
     this.undoStack.push(this.lastSnapshot);
     this._restore(this.redoStack.pop());
   }
+  /** Rebuilds every part from the current state (e.g. after new game content was mounted). */
+  reload() { this._restore(this.lastSnapshot); }
   _restore(s) {
     const sel = this.selected && this.selected.UniqueID;
     this._replace(JSON.parse(s));
@@ -93,6 +95,7 @@ export class Editor {
     if (!parent && className !== 'group') {
       const g = w.createPart('group');
       g.Name = 'my outfit';
+      g.CoordinateSpace = 'source'; // new outfits use Garry's Mod bone axes, like PAC3
       w.addPart(g);
       parent = g;
     }
@@ -154,6 +157,7 @@ export class Editor {
     this.world.clear();
     const g = this.world.createPart('group');
     g.Name = 'my outfit';
+    g.CoordinateSpace = 'source';
     this.world.addPart(g);
     this.select(g);
     this.commit();

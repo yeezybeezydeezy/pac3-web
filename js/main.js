@@ -17,6 +17,8 @@ import { EXAMPLES, DEFAULT_EXAMPLE } from './editor/examples.js';
 import { toast, showMenu } from './editor/ui.js';
 import { buildEnvironment } from './environment.js';
 import { PlayMode } from './play.js';
+import { vfs, clearFailedAssets } from './source/assets.js';
+import { openGameContent } from './editor/content.js';
 
 const DEFAULT_APPEARANCE = { hide: false, color: [1, 1, 1], brightness: 1, alpha: 1, material: '', wireframe: false, size: 1, scale: [1, 1, 1] };
 const $ = (id) => document.getElementById(id);
@@ -49,8 +51,9 @@ const editor = new Editor(world);
 const app = {
   world, editor, env, audio, input, canvas, hud: $('hud'), mic: {},
   saveSettings() {
-    storage.saveSettings({ volume: audio.volume, player: { name: player.name, health: player.health, maxHealth: player.maxHealth, armor: player.armor, color: player.color, weaponColor: player.weaponColor } });
+    storage.saveSettings({ volume: audio.volume, player: { name: player.name, health: player.health, maxHealth: player.maxHealth, armor: player.armor, color: player.color, weaponColor: player.weaponColor, weapon: player.weapon, weapons: player.weapons } });
   },
+  openContent: (opts) => openGameContent(app, opts),
   async toggleMic() {
     if (app.mic.stream) {
       app.mic.stream.getTracks().forEach((t) => t.stop());
@@ -77,6 +80,8 @@ if (settings.player && typeof settings.player === 'object') {
   if (typeof sp.name === 'string') player.name = sp.name.slice(0, 40);
   for (const k of ['health', 'maxHealth', 'armor']) if (Number.isFinite(sp[k])) player[k] = sp[k];
   for (const k of ['color', 'weaponColor']) if (Array.isArray(sp[k]) && sp[k].length === 3) player[k] = sp[k].map(Number);
+  if (typeof sp.weapon === 'string') player.weapon = sp.weapon.slice(0, 80);
+  if (Array.isArray(sp.weapons)) player.weapons = sp.weapons.filter((x) => typeof x === 'string').map((x) => x.slice(0, 80)).slice(0, 50);
 }
 
 const viewport = new Viewport({ canvas, camera, scene, world, editor, toolbar: $('vp-toolbar'), onPlay: () => app.play.enter() });
@@ -84,8 +89,27 @@ app.viewport = viewport;
 const menus = new Menus(app);
 menus.buildMenubar($('menubar'));
 new TreeView($('tree'), editor, menus);
-new PropertiesView($('props'), editor, viewport, help);
+new PropertiesView($('props'), editor, viewport, help, { browse: (kind, pick) => openGameContent(app, { kind, pick }) });
 app.play = new PlayMode(app);
+
+// ---------- game content (local Garry's Mod / Workshop folders) ----------
+avatar.onBonesChanged = () => {
+  for (const p of world.allParts) if (p.attach) p.attach();
+  viewport.buildMarkers();
+};
+let mountedCount = 0, remountTimer = 0;
+vfs.onChange(() => {
+  if (vfs.mounts.length === mountedCount) return;
+  mountedCount = vfs.mounts.length;
+  clearTimeout(remountTimer);
+  remountTimer = setTimeout(() => {
+    // new content: retry anything that failed to load and rebuild the outfit with it
+    clearFailedAssets();
+    avatar.reloadAnimations();
+    editor.reload();
+  }, 600);
+});
+vfs.restore();
 $('add-btn').addEventListener('click', (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(menus.addItems(editor.selected), r.left, r.bottom + 2); });
 
 // Audio needs a user gesture.

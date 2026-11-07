@@ -51,7 +51,8 @@ export class EventPart extends Part {
     const v = def.get(this, args);
     this.active = def.kind === 'bool' ? !!v : compareEvent(v, this.Operator, args[0], def.kind);
     this.status = `${this.Event} is ${this.active ? 'TRUE' : 'false'}${targets.length ? '' : ' (no target)'}`;
-    if (this.Invert ? !this.active : this.active) for (const t of targets) t.eventHidden = true;
+    this.triggered = this.Invert ? !this.active : this.active;
+    if (this.triggered) for (const t of targets) t.eventHidden = true;
   }
 }
 registerPart(EventPart);
@@ -79,8 +80,17 @@ export class ProxyPart extends Part {
     prop('Pow', 'number', 1, { group: 'easy setup', step: 0.1 }),
     prop('Min', 'number', 0, { group: 'easy setup', step: 0.1 }),
     prop('Max', 'number', 1, { group: 'easy setup', step: 0.1 }),
+    ...[1, 2, 3, 4, 5].map((i) => prop(`Extra${i}`, 'expression', '', { group: 'extra expressions', help: `Computed before Expression; read it as var${i}() here, or var${i}("name or uid") from another proxy.` })),
   ];
-  constructor(world) { super(world); this.feedback = null; this.output = []; this.parentVel = new THREE.Vector3(); this._lastPos = null; }
+  constructor(world) { super(world); this.feedback = null; this.output = []; this.extraOut = [0, 0, 0, 0, 0]; this._extra = []; this.parentVel = new THREE.Vector3(); this._lastPos = null; }
+  _compile(src, slot) {
+    const c = (this._compiled ||= {});
+    if (!c[slot] || c[slot].src !== src) {
+      try { c[slot] = { src, fn: compileExpression(src, { functions: PROXY_FUNCTIONS, constants: PROXY_CONSTANTS }), err: '' }; }
+      catch (e) { c[slot] = { src, fn: null, err: e.message }; }
+    }
+    return c[slot];
+  }
   onShow() { this._randomOnce = null; }
   getTargets() {
     const t = this.TargetPart ? this.world.getPart(this.TargetPart) : null;
@@ -95,14 +105,17 @@ export class ProxyPart extends Part {
   }
   getParentWorldPosition(out) { return parentWorldPosition(this, out, this.getTargets()[0]); }
   compute() {
+    for (let i = 0; i < 5; i++) {
+      const src = this[`Extra${i + 1}`];
+      if (!src.trim()) { this.extraOut[i] = 0; continue; }
+      const c = this._compile(src, i);
+      if (!c.fn) { this.status = `Extra${i + 1} error: ${c.err}`; return null; }
+      try { this.extraOut[i] = c.fn(this)[0] || 0; } catch (e) { this.status = `Extra${i + 1} error: ${e.message}`; return null; }
+    }
     if (this.Expression.trim()) {
-      if (this._src !== this.Expression) {
-        this._src = this.Expression;
-        try { this._fn = compileExpression(this.Expression, { functions: PROXY_FUNCTIONS, constants: PROXY_CONSTANTS }); this._err = ''; }
-        catch (e) { this._fn = null; this._err = e.message; }
-      }
-      if (!this._fn) { this.status = `Expression error: ${this._err}`; return null; }
-      try { return this._fn(this); } catch (e) { this.status = `Expression error: ${e.message}`; return null; }
+      const c = this._compile(this.Expression, 'main');
+      if (!c.fn) { this.status = `Expression error: ${c.err}`; return null; }
+      try { return c.fn(this); } catch (e) { this.status = `Expression error: ${e.message}`; return null; }
     }
     const input = PROXY_FUNCTIONS[this.Input];
     const x = num(input ? input(this) : 0) * this.InputMultiplier / (this.InputDivider || 1) + this.Offset;
@@ -176,7 +189,7 @@ export class AnimationPart extends Part {
   static category = 'model';
   static description = 'Plays an animation sequence on the player model while visible.';
   static props = [
-    prop('SequenceName', 'enum', 'wave', { options: SEQUENCE_NAMES }),
+    prop('SequenceName', 'enum', 'wave', { options: SEQUENCE_NAMES, free: true, help: 'A built-in animation, or any sequence of the model (e.g. taunt_dance, gesture_wave, sit_zen) when game content is mounted.' }),
     prop('Rate', 'number', 1, { step: 0.1 }),
     prop('Weight', 'number', 1, { min: 0, max: 1, step: 0.05, help: 'Blend with the normal movement animation.' }),
     prop('Loop', 'boolean', true),
@@ -186,6 +199,7 @@ export class AnimationPart extends Part {
     prop('Max', 'number', 1, { min: 0, max: 1, step: 0.05 }),
     prop('ResetOnHide', 'boolean', true),
   ];
+  getSequenceOptions() { return this.world.avatar.getSequenceNames(); }
   cycle(speed) {
     const t = this.ResetOnHide ? this.timeShown() : this.world.time;
     const x = t * speed * this.Rate + this.Offset;

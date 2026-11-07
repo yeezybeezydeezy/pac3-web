@@ -178,3 +178,18 @@ body.playing #sidebar, body.playing #vp-toolbar { display: none; }
   body.playing #app { grid-template-rows: 36px 1fr 0; }
   .tb-group:last-child { margin-left: 0; }
 }
+
+/* game content dialog */
+.content-dlg { display: grid; gap: 10px; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; color: var(--muted); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.browse-bar { display: grid; grid-template-columns: 140px 1fr; gap: 6px; }
+.crumbs { font-size: 12px; overflow-wrap: anywhere; }
+.file-list { display: grid; gap: 1px; max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 2px; }
+.file-row { display: flex; align-items: center; gap: 4px; }
+button.file-row, .file-name { flex: 1; text-align: left; background: none; border: 0; padding: 4px 8px; border-radius: 4px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.file-row:hover, .file-name:hover { background: var(--panel-2); }
+.file-row.dir { color: #c8d3e6; }
+.modal:has(.content-dlg) { width: min(760px, 100%); }
+.bg-row { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; }

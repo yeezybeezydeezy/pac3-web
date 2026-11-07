@@ -24,6 +24,20 @@ It runs entirely in the browser with no build step (plain ES modules + [three.js
 - **Events**: `is_crouching`, `is_on_ground`, `is_moving`, `is_running`, `is_firing`, `button`, `say`, `command` (pac_event), `timerx`, `random_timer`, `speed`, `health`, `animation`, `camera_distance` and more, with PAC3's operators and Invert semantics.
 - **Proxies**: Lua-flavoured expressions (`sin(time()*4)*10`, `hsv_to_color(time()*90,1,1)`, `x > 1 and 5 or 2`) or the easy setup (input → function → min/max). Driven values are never written into the saved outfit.
 
+## Your Garry's Mod content (no uploading)
+
+**File → Game content** mounts folders from your own computer: pick your `GarrysMod` folder, or your Steam `steamapps` folder to include Workshop items too. Everything is read locally in your browser; nothing is uploaded and no game files are part of this site.
+
+- Reads loose files, `.vpk` archives (Garry's Mod, HL2, CS:S content), Workshop `.gma` addons, and older LZMA-compressed `_legacy.bin` Workshop items (unpacked in a background worker).
+- Models (`.mdl`/`.vvd`/`.vtx`), materials (`.vmt`, including `patch`), textures (`.vtf`, DXT and uncompressed formats) and sounds (`.wav` including ADPCM, `.mp3`, `.ogg`) load by their game paths, e.g. `models/player/items/humans/top_hat.mdl`. `.vtf` URLs work too.
+- An **entity** part can swap the avatar for any playermodel. It plays that model's own animation set (`$includemodel`, e.g. `m_anm.mdl`, `f_anm.mdl`, `z_anm.mdl`): idle, walk/run blends, crouch, jump, swim, sit and taunts. Animation parts accept any of its sequence names.
+- **Import PAC3 outfits** straight from `garrysmod/data/pac3/*.txt`: parts, events, proxies (including `Extra1-5`/`var1()`), `material_3d` settings and per-slot `Materials` lists are converted.
+- Chrome and Edge remember mounted folders between visits; other browsers use a folder-upload dialog.
+
+### Same skeleton as Source
+
+The built-in mannequin is rigged like a ValveBiped playermodel: the same bone names, hierarchy, bone axes and attachments (`eyes`, `chest`, hands). Outfits created here use Garry's Mod bone axes (`CoordinateSpace: source`), so positions mean the same thing as in PAC3, on the mannequin or on any playermodel. Without mounted content the mannequin uses built-in procedural animations.
+
 ## Running locally
 
 Any static file server works, for example:
@@ -40,8 +54,8 @@ PAC3 Web recreates the editor, part system, events and proxies, but it is not Ga
 
 - Uses an original mannequin and procedurally generated textures and sounds. No Valve or Garry's Mod assets are included.
 - No multiplayer wearing, Lua scripting, or server-side parts (damage, physics, health modifiers).
-- Source engine models, materials and particle effects are not supported yet. Use primitives or glTF/OBJ files instead.
-- Outfits are JSON, not PAC3's Lua `.txt` format. PAC3 class names like `model2` and `light2` are accepted on import.
+- Source models, materials, sounds and player animations load only from game folders you mount; Source particle effects (`.pcf`), detail textures, bodygroups and PAC3's "Showtime dynamics" are not supported.
+- Outfits are saved as JSON. PAC3 `.txt` outfits can be imported; a few PAC3-only parts (custom_animation, weapon, holdtype, submaterial) are skipped and their children kept.
 
 Imported outfits are treated as untrusted. They are size- and depth-limited, every property is type-checked, and proxy expressions run in a sandboxed evaluator (no `eval`).
 

@@ -2,6 +2,7 @@
 import { h, rgbToHex, hexToRgb, readFileAs } from '../core/util.js';
 import { EVENTS } from '../core/inputs.js';
 import { toast } from './ui.js';
+import { parseModelModifiers, modelModifiersString } from '../source/assets.js';
 
 const fmt = (v) => String(Number(Number(v).toFixed(4)));
 const AXIS_LABELS = { vector: ['x', 'y', 'z'], angle: ['p', 'y', 'r'] };
@@ -48,11 +49,12 @@ function numInput(get, set, commit, step, aria) {
 }
 
 export class PropertiesView {
-  constructor(el, editor, viewport, help) {
+  constructor(el, editor, viewport, help, { browse = null } = {}) {
     this.el = el;
     this.editor = editor;
     this.viewport = viewport;
     this.help = help;
+    this.browse = browse;
     this.fields = [];
     this.collapsedGroups = new Set();
     this.structVersion = 0;
@@ -179,6 +181,30 @@ export class PropertiesView {
         control = h('div', { class: 'stack' }, ta, extra);
         break;
       }
+      case 'bodygroups': {
+        // one dropdown per bodygroup of the loaded model, plus the raw PAC3 "name=index;" string
+        const box = h('div', { class: 'stack' });
+        const raw = h('input', { type: 'text', id, class: 'field mono', spellcheck: false, placeholder: 'name=index; (load a .mdl to list bodygroups)' });
+        raw.addEventListener('change', () => { set(raw.value); commit(); });
+        let key = null;
+        refresh = (force) => {
+          const groups = part.getBodygroups ? part.getBodygroups() : [];
+          const k = `${JSON.stringify(groups)}|${get()}`;
+          if (k !== key) {
+            key = k;
+            const mods = parseModelModifiers(get());
+            box.replaceChildren(...groups.map((g) => {
+              const sel = h('select', { class: 'field', 'aria-label': `Bodygroup ${g.name}` }, g.models.map((m, i) => h('option', { value: String(i), text: `${i}: ${m}` })));
+              sel.value = String(Math.min(g.models.length - 1, mods.groups.get(g.name.toLowerCase()) ?? 0));
+              sel.addEventListener('change', () => { const cur = parseModelModifiers(get()); cur.groups.set(g.name.toLowerCase(), Number(sel.value)); set(modelModifiersString(cur)); commit(); });
+              return h('label', { class: 'bg-row' }, h('span', { class: 'muted', text: g.name }), sel);
+            }), raw);
+          }
+          if (force || document.activeElement !== raw) raw.value = get();
+        };
+        control = box;
+        break;
+      }
       case 'enum': case 'asset': case 'bone': case 'part': {
         ({ control, refresh } = this.choiceField(part, def, id, get, set, commit));
         break;
@@ -217,7 +243,7 @@ export class PropertiesView {
       sel.addEventListener('change', () => { set(sel.value); commit(); });
       return { control: sel, refresh: () => { if (ver !== this.structVersion) { ver = this.structVersion; build(); } if (document.activeElement !== sel) sel.value = get(); } };
     }
-    const dynamic = () => (def.type === 'bone' ? part.getBoneOptions ? part.getBoneOptions() : [] : def.name === 'VariableName' && part.getVariableOptions ? part.getVariableOptions() : def.options || []);
+    const dynamic = () => (def.type === 'bone' ? part.getBoneOptions ? part.getBoneOptions() : [] : def.name === 'VariableName' && part.getVariableOptions ? part.getVariableOptions() : def.name === 'SequenceName' && part.getSequenceOptions ? part.getSequenceOptions() : def.options || []);
     // Strict enums: a select
     if (def.type === 'enum' && !def.free && def.name !== 'VariableName') {
       const sel = h('select', { id, class: 'field' }, def.options.map((o) => h('option', { value: o, text: o || '(none)' })));
@@ -240,6 +266,9 @@ export class PropertiesView {
     const tools = [];
     if (def.type === 'bone') {
       tools.push(h('button', { type: 'button', class: 'icon-btn', title: 'Pick a bone in the viewport', 'aria-label': 'Pick bone in viewport', text: '🎯', onclick: () => this.viewport.pickBone((name) => { set(name); commit(); inp.value = name; }) }));
+    }
+    if (def.type === 'asset' && def.browse && this.browse) {
+      tools.push(h('button', { type: 'button', class: 'icon-btn', title: 'Pick from your mounted game content', 'aria-label': 'Browse game content', text: '🗂', onclick: () => this.browse(def.browse, (v) => { set(v); commit(); inp.value = v; }) }));
     }
     if (def.type === 'asset' && def.accept) {
       const file = h('input', { type: 'file', accept: def.accept, hidden: true });
