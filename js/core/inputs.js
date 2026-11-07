@@ -1,6 +1,7 @@
 // Proxy functions/inputs and event types. ctx is always the proxy or event part.
 import * as THREE from 'three';
 import { num } from './expression.js';
+import { EXTRA_INPUTS, EXTRA_EVENTS } from './inputs-pac3.js';
 
 const DEG = 180 / Math.PI;
 const pl = (c) => c.world.player;
@@ -144,6 +145,8 @@ INPUTS.light_value = () => 1;
 INPUTS.light_amount = () => [1, 1, 1];
 INPUTS.light_amount_r = INPUTS.light_amount_g = INPUTS.light_amount_b = () => 1;
 
+for (const [k, fn] of Object.entries(EXTRA_INPUTS)) if (!Object.hasOwn(INPUTS, k) && !Object.hasOwn(MATH, k)) INPUTS[k] = fn;
+
 export const PROXY_FUNCTIONS = { ...MATH, ...INPUTS };
 export const PROXY_CONSTANTS = { pi: Math.PI, PI: Math.PI, huge: 1e9, e: Math.E };
 export const PROXY_INPUT_NAMES = Object.keys(INPUTS).filter((n) => !/^feedback_|^stime$|^ftime$|^extra\d$/.test(n));
@@ -200,6 +203,8 @@ export const EVENTS = {
   model_name: { kind: 'string', op: 'find simple', args: 'model path', help: 'The player model in use (an entity part Model, or "mannequin").', get: (e) => (e.world.fx.entity && e.world.fx.entity.model) || 'mannequin' },
   owner_health: { kind: 'number', op: 'below', args: 'health', help: 'Same as health (PAC3 name).', get: (e) => e.world.player.health },
 };
+
+for (const [k, def] of Object.entries(EXTRA_EVENTS)) if (!Object.hasOwn(EVENTS, k)) EVENTS[k] = def;
 
 export function compareEvent(value, op, arg, kind) {
   if (value == null) return false;

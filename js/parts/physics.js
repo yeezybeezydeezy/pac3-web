@@ -94,6 +94,7 @@ export class ProjectilePart extends MovablePart {
   onHide() { super.onHide(); this._nextFire = Infinity; }
   fire() {
     const w = this.world;
+    w.lastFire = w.time;
     this.offset.updateWorldMatrix(true, false);
     const origin = this.getWorldPosition(new THREE.Vector3());
     const fwd = this.getWorldForward(new THREE.Vector3());

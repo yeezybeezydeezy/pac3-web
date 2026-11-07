@@ -81,6 +81,7 @@ export class SoundPart extends MovablePart {
     const token = ++this._token;
     if (!this.Overlapping) this.stop();
     const path = this.pickPath();
+    this.world.lastSound = { name: path, time: this.world.time };
     audio.getBuffer(path).then((buf) => {
       if (token !== this._token && !this.Overlapping) return;
       if (!this.inWorld) return;

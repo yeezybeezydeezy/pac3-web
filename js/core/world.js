@@ -18,6 +18,11 @@ export class World {
     this.pacProxies = new Map();
     this.chat = { text: '', time: -1e9 };
     this.mic = { level: 0 };
+    this.animEvent = null; // { name, time }: footstep, jump
+    this.lastFire = -1e9;
+    this.lastSound = null; // { name, time }
+    this.colliders = []; // THREE.Box3 of world objects
+    this.healthBars = [];
     this.fx = { shake: 0, fog: null, camera: null, movement: null };
     this._all = [];
     this._allDirty = true;

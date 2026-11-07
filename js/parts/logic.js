@@ -48,8 +48,11 @@ export class EventPart extends Part {
     if (vis && !this._anchorVis) this.refTime = this.world.time;
     this._anchorVis = vis;
     const args = this.Arguments.split('@@');
+    const tp = this.getParentWorldPosition(_p);
+    if (this._lastPos && this.world.dt > 0) this.parentVel = (this.parentVel || new THREE.Vector3()).subVectors(tp, this._lastPos).divideScalar(this.world.dt);
+    this._lastPos = (this._lastPos || new THREE.Vector3()).copy(tp);
     const v = def.get(this, args);
-    this.active = def.kind === 'bool' ? !!v : compareEvent(v, this.Operator, args[0], def.kind);
+    this.active = def.kind === 'bool' ? !!v : compareEvent(v, this.Operator, args[def.cmp ?? 0], def.kind);
     this.status = `${this.Event} is ${this.active ? 'TRUE' : 'false'}${targets.length ? '' : ' (no target)'}`;
     this.triggered = this.Invert ? !this.active : this.active;
     if (this.triggered) for (const t of targets) t.eventHidden = true;
@@ -126,7 +129,7 @@ export class ProxyPart extends Part {
   runProxy(touched) {
     const w = this.world;
     this.getParentWorldPosition(_p);
-    if (this._lastPos && w.dt > 0) this.parentVel.subVectors(_p, this._lastPos).divideScalar(w.dt);
+    if (this._lastPos && w.dt > 0) { this.parentVel.subVectors(_p, this._lastPos).divideScalar(w.dt); this._delta = (this._delta || new THREE.Vector3()).subVectors(_p, this._lastPos); }
     this._lastPos = (this._lastPos || new THREE.Vector3()).copy(_p);
 
     const values = this.compute();

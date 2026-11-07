@@ -35,7 +35,7 @@ export class PlayMode {
       p.eyeYaw -= e.movementX * 0.0025;
       p.eyePitch = clamp(p.eyePitch + e.movementY * 0.0025, -1.45, 1.45);
     });
-    canvas.addEventListener('mousedown', (e) => { if (this.locked) app.input.mouseDown(e.button); });
+    canvas.addEventListener('mousedown', (e) => { if (this.locked) { app.input.mouseDown(e.button); if (e.button === 0) world.lastFire = world.time; } });
     canvas.addEventListener('wheel', (e) => { if (world.playMode) { e.preventDefault(); this.dist = clamp(this.dist * (e.deltaY > 0 ? 1.12 : 0.89), 30, 600); } }, { passive: false });
     this.chatInput.addEventListener('keydown', (e) => {
       e.stopPropagation();

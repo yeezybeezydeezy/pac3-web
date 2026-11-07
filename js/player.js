@@ -23,6 +23,8 @@ export class Player {
     this.color = [0.24, 0.55, 1];
     this.weaponColor = [0.3, 1, 1];
     this.weapon = 'none';
+    this.holdtype = 'normal';
+    this.ammo = { clip: 30, clipSize: 30, reserve: 90, secondary: 0 };
     this.weapons = [];
     this.preview = 'idle';
   }

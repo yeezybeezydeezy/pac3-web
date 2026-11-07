@@ -70,16 +70,19 @@ export function buildEnvironment(scene, renderer) {
     [new THREE.BoxGeometry(200, 20, 120), mat(0x8fa37c), [600, 10, -420]],
     [new THREE.SphereGeometry(70, 32, 20), mat(0xb46b6b), [-220, 70, -700]],
   ];
+  const colliders = [];
   for (const [g, m, p] of props) {
     const mesh = new THREE.Mesh(g, m);
     mesh.position.fromArray(p);
     mesh.castShadow = mesh.receiveShadow = true;
     mesh.raycast = () => {};
     scene.add(mesh);
+    mesh.updateMatrixWorld();
+    colliders.push(new THREE.Box3().setFromObject(mesh));
   }
 
   return {
-    sun, grid, defaultFog,
+    sun, grid, defaultFog, colliders,
     update(target) {
       sun.target.position.copy(target);
       sun.position.copy(target).add(new THREE.Vector3(260, 520, 180));

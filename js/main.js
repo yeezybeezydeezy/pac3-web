@@ -45,7 +45,8 @@ const player = new Player();
 const input = new Input();
 const audio = new AudioEngine();
 const world = new World({ scene, camera, avatar, player, audio, input });
-avatar.onFootstep = () => world.emit('footstep');
+avatar.onFootstep = () => { world.animEvent = { name: 'footstep', time: world.time }; world.emit('footstep'); };
+world.colliders = env.colliders;
 const editor = new Editor(world);
 
 const app = {
@@ -210,7 +211,9 @@ const shake = new THREE.Vector3();
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.1);
+  const wasGrounded = player.onGround;
   player.update(dt, world, input);
+  if (wasGrounded && !player.onGround && world.playMode) world.animEvent = { name: 'jump', time: world.time };
   world.update(dt);
   avatar.setAppearance(world.fx.entity || DEFAULT_APPEARANCE);
   env.applyFog(world.fx.fog);
