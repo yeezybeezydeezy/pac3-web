@@ -1,5 +1,5 @@
 // Web Audio engine: lazily created context, cached buffers, built-in synthesized sounds.
-import { isUrl } from './util.js';
+import { isUrl, fixUrl } from './util.js';
 import { readGameSound, vfs } from '../source/assets.js';
 import { decodeWav } from '../source/wav.js';
 
@@ -80,7 +80,7 @@ export class AudioEngine {
       // URL or a game sound path from mounted folders ("ambient/alarms/klaxon1.wav")
       p = (async () => {
         let bytes;
-        if (isUrl(path)) { const r = await fetch(path); if (!r.ok) throw new Error(`HTTP ${r.status}`); bytes = new Uint8Array(await r.arrayBuffer()); }
+        if (isUrl(path)) { const r = await fetch(fixUrl(path)); if (!r.ok) throw new Error(`HTTP ${r.status}`); bytes = new Uint8Array(await r.arrayBuffer()); }
         else {
           bytes = await readGameSound(path);
           if (!bytes) throw new Error(vfs.mounted ? `sound not found: ${path.slice(0, 80)}` : `"${path.slice(0, 60)}" needs mounted game content (File → Game content)`);

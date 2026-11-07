@@ -8,7 +8,7 @@ import { ParticlesPart } from './effects.js';
 import { parseModelModifiers, modelModifiersString, friendlyBoneName } from '../source/assets.js';
 import { parseLuaData } from '../source/luadata.js';
 import { getTexture, SPRITE_TEXTURES } from '../core/textures.js';
-import { anglesToQuat, setColor, DEG, clamp, deepClone } from '../core/util.js';
+import { anglesToQuat, setColor, DEG, clamp, deepClone, fixUrl } from '../core/util.js';
 
 const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4(), _s = new THREE.Vector3();
 const NO_AIM = ['EyeAngles', 'AimPart'];
@@ -73,7 +73,7 @@ export class CustomAnimationPart extends Part {
       if (this.URL.trim()) {
         if (!/^https?:/i.test(this.URL.trim())) throw new Error('URL must be http(s)');
         this.status = 'Loading animation…';
-        const r = await fetch(this.URL.trim());
+        const r = await fetch(fixUrl(this.URL));
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         text = (await r.text()).slice(0, 5e6);
       }

@@ -5,6 +5,7 @@ import { MovablePart, inSourceSpace } from './movable.js';
 import { SHADINGS, resolveMaterialList } from './model.js';
 import { SURFACE_TEXTURES } from '../core/textures.js';
 import { anglesToQuat, setColor } from '../core/util.js';
+import { SHADER_PARAMS, SHADERS, sourceParams } from '../source/shading.js';
 
 const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4(), _s = new THREE.Vector3();
 
@@ -117,8 +118,10 @@ export class MaterialPart extends Part {
   static className = 'material';
   static icon = '🎨';
   static category = 'modifiers';
-  static description = 'Overrides the material of its parent model (or of the playermodel, inside an entity part): texture, normal map, shading, emission, roughness, scrolling.';
+  static description = 'Overrides the material of its parent model (or of the playermodel, inside an entity part). Simple settings (texture, color, emission, roughness, scrolling), or set Shader to use Source / PAC3 shader parameters: detail textures, self-illumination, phong, animated frames.';
   static props = [
+    prop('Shader', 'enum', '', { options: SHADERS, help: 'Empty: the simple settings below. VertexLitGeneric / UnlitGeneric: the Source shader parameters (group "shader"), like PAC3\'s material_3d / material_2d.' }),
+    ...SHADER_PARAMS.map(([n, t, d]) => prop(n, t, d, { group: 'shader', ...(t === 'asset' ? { accept: 'image/*,.vtf', browse: 'texture' } : {}), ...(t === 'number' && /frame|blendmode/.test(n) ? { step: 1 } : t === 'number' ? { step: 0.05 } : {}) })),
     prop('MaterialOverride', 'string', '', { help: 'Only affect materials with this name (comma separated), e.g. "helmet". Empty = all.' }),
     prop('Shading', 'enum', 'default', { options: ['default', ...SHADINGS] }),
     prop('BaseTexture', 'asset', '', { options: ['', ...SURFACE_TEXTURES], accept: 'image/*,.vtf', browse: 'texture', help: 'Texture name, image/.vtf URL, or a game texture path.' }),
@@ -139,6 +142,12 @@ export class MaterialPart extends Part {
     const t = this.world.time;
     return [this.TextureScroll[0] + this.ScrollRate[0] * t, this.TextureScroll[1] + this.ScrollRate[1] * t];
   }
+  /** Normalized Source shading settings (Shader set), recomputed after property changes. */
+  sourceParams() {
+    if (!this.Shader) return null;
+    if (!this._src) this._src = sourceParams((k) => this[k], { shader: this.Shader });
+    return this._src;
+  }
   /** Does this part apply to a material slot with the given name? */
   matches(name) {
     const want = this.MaterialOverride.trim().toLowerCase();
@@ -149,12 +158,14 @@ export class MaterialPart extends Part {
   /** Plain values for the avatar (entity parent). */
   snapshot() {
     const o = { scroll: this.scroll, matches: (n) => this.matches(n) };
-    for (const k of ['MaterialOverride', 'Shading', 'BaseTexture', 'BumpMap', 'Color', 'Alpha', 'Emissive', 'EmissiveIntensity', 'Roughness', 'Metalness', 'Wireframe', 'TextureScale']) o[k] = this[k];
+    for (const k of ['MaterialOverride', 'Shading', 'BaseTexture', 'BumpMap', 'Color', 'Alpha', 'Emissive', 'EmissiveIntensity', 'Roughness', 'Metalness', 'Wireframe', 'TextureScale', 'Shader']) o[k] = this[k];
+    // plain values (they become part of the avatar's change key); the avatar rebuilds the shading from them
+    if (this.Shader) { o.params = {}; for (const [n] of SHADER_PARAMS) o.params[n] = this[n]; }
     return o;
   }
   _dirtyParent() { if (this.parent && this.parent.markDirty) this.parent.markDirty(); if (this._lastParent && this._lastParent !== this.parent && this._lastParent.markDirty) this._lastParent.markDirty(); this._lastParent = this.parent; }
   attach() { this._dirtyParent(); }
-  onPropChanged() { this._dirtyParent(); }
+  onPropChanged() { this._src = null; this._dirtyParent(); }
   onShow() { this._dirtyParent(); }
   onHide() { this._dirtyParent(); }
   destroy() { const p = this.parent; this.parent = null; this._dirtyParent(); if (p && p.markDirty) p.markDirty(); }

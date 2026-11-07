@@ -8,6 +8,8 @@ import { parseKeyValues, parseVmtVector } from './keyvalues.js';
 import { parseSourceModel, materialPaths } from './mdl.js';
 import { normPath } from './binary.js';
 import { parseAnimModel } from './anim.js';
+import { readZip } from './zip.js';
+import { fixUrl } from '../core/util.js';
 
 export const vfs = new VFS();
 const isUrl = (s) => /^(https?:|data:|blob:)/i.test(s);
@@ -26,11 +28,68 @@ export function mat34ToOurs(m) {
 /** Is this an asset path that should be resolved from game content? */
 export const isGamePath = (s) => typeof s === 'string' && !isUrl(s) && /[\\/]/.test(s);
 export const isSourceModelPath = (s) => typeof s === 'string' && /\.mdl$/i.test(s.trim()) && !isUrl(s.trim());
+/** A model link that PAC3 treats as a zipped .mdl ("URL model"): any http(s) link that is not .obj/.glb/.gltf. */
+export const isModelPackUrl = (s) => typeof s === 'string' && /^https?:/i.test(s.trim()) && !/\.(obj|glb|gltf)([?#]|$)/i.test(s.trim());
+/** A Source model from mounted content or from a zip link. */
+export const isSourceModelRef = (s) => isSourceModelPath(s) || isModelPackUrl(s);
 
+const MAX_DOWNLOAD = 200 * 1024 * 1024;
 async function fetchBytes(url) {
-  const r = await fetch(url);
+  const r = await fetch(fixUrl(url));
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return new Uint8Array(await r.arrayBuffer());
+  if (Number(r.headers.get('content-length')) > MAX_DOWNLOAD) throw new Error('Download is larger than 200 MB');
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  if (bytes.length > MAX_DOWNLOAD) throw new Error('Download is larger than 200 MB');
+  return bytes;
+}
+
+// ---------- model packs: .zip links holding an .mdl and its files (PAC3 "URL models") ----------
+// Each pack gets its own folder, models/pac_url/<id>/ and materials/pac_url/<id>/, and files are found
+// by name wherever they sit in the zip (like PAC3). Its materials point at the pack's own textures.
+const packs = new Map(); // id -> Map(file name -> zip entry)
+const packLoads = new Map(); // url -> Promise<model path>
+const PACK_PATH = /^(?:models|materials)\/pac_url\/([a-z0-9]+)\/(?:.*\/)?([^/]+)$/;
+const fileName = (p) => String(p).replace(/\\/g, '/').split('/').pop().toLowerCase();
+function hashId(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+/** Reads a game path from a model pack or the mounted folders. */
+async function readAsset(path) {
+  const m = PACK_PATH.exec(path);
+  if (!m) return vfs.read(path);
+  const e = packs.get(m[1]) && packs.get(m[1]).get(m[2]);
+  return e ? e.read() : null;
+}
+/** Downloads a zip model link (once) and returns the path of its .mdl, e.g. models/pac_url/1x2y3z/hat.mdl. */
+export function loadModelPack(url) {
+  url = fixUrl(url);
+  if (packLoads.has(url)) return packLoads.get(url);
+  const p = (async () => {
+    const files = new Map();
+    for (const e of readZip(await fetchBytes(url))) if (!files.has(fileName(e.name))) files.set(fileName(e.name), e);
+    const mdl = [...files.keys()].find((n) => n.endsWith('.mdl'));
+    if (!mdl) throw new Error('The zip archive has no .mdl model in it');
+    const id = hashId(url);
+    packs.set(id, files);
+    return `models/pac_url/${id}/${mdl}`;
+  })();
+  packLoads.set(url, p);
+  p.catch(() => packLoads.delete(url));
+  return p;
+}
+/** Game model path for a model reference: zip links are downloaded first. */
+export const resolveModelRef = async (ref) => (isModelPackUrl(ref) ? loadModelPack(ref) : ref);
+/** Texture parameters of a pack material that name one of the pack's .vtf files point at that file. */
+function packMaterial(id, params) {
+  const files = packs.get(id);
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v !== 'string' || !k.startsWith('$')) continue;
+    const n = fileName(v).replace(/\.vtf$/, '');
+    if (files.has(`${n}.vtf`)) params[k] = `pac_url/${id}/${n}`;
+  }
+  return params;
 }
 
 // ---------- materials (.vmt) ----------
@@ -39,9 +98,16 @@ export function loadVmt(path, depth = 0) {
   const key = isUrl(path) ? path : normPath(path);
   if (vmtCache.has(key)) return vmtCache.get(key);
   const p = (async () => {
-    const bytes = isUrl(key) ? await fetchBytes(key) : await vfs.read(key);
-    if (!bytes) return null;
+    const pack = PACK_PATH.exec(key);
+    const bytes = isUrl(key) ? await fetchBytes(key) : await readAsset(key);
+    if (!bytes) {
+      // a pack with a texture but no material for it: use the texture as is (PAC3 does the same)
+      const n = pack && fileName(key).replace(/\.vmt$/, '');
+      if (n && packs.get(pack[1]).has(`${n}.vtf`)) return { shader: 'vertexlitgeneric', params: { $basetexture: `pac_url/${pack[1]}/${n}` } };
+      return null;
+    }
     const kv = parseKeyValues(textDecoder.decode(bytes));
+    if (pack && kv.value && typeof kv.value === 'object') packMaterial(pack[1], kv.value);
     if (kv.name === 'patch' && kv.value.include && depth < 4) {
       const base = await loadVmt(kv.value.include, depth + 1);
       const params = Object.assign(Object.create(null), base ? base.params : {});
@@ -86,7 +152,7 @@ async function textureBytes(ref) {
   const tries = [];
   if (/\.(vtf|png|jpg|jpeg)$/.test(p)) tries.push(`materials/${p}`);
   else tries.push(`materials/${p}.vtf`, `materials/${p}.png`);
-  for (const t of tries) { const b = await vfs.read(t); if (b) return { bytes: b, ext: t.endsWith('.vtf') ? 'vtf' : 'img' }; }
+  for (const t of tries) { const b = await readAsset(t); if (b) return { bytes: b, ext: t.endsWith('.vtf') ? 'vtf' : 'img' }; }
   // maybe it is a material: use its $basetexture
   const vmt = await loadVmt(`materials/${p.replace(/\.vmt$/, '')}.vmt`);
   const bt = vmt && (vmt.params.$basetexture || vmt.params['$basetexture']);
@@ -113,6 +179,7 @@ export function getSourceTexture(ref, { linear = false } = {}) {
       const img = decodeVTF(got.bytes);
       fillTexture(tex, { data: img.rgba, width: img.width, height: img.height }, linear);
       tex.userData.frames = img.frames;
+      if (img.frames > 1) tex.userData.frameSource = { bytes: got.bytes, linear };
     } else {
       const bmp = await createImageBitmap(new Blob([got.bytes]));
       const c = new OffscreenCanvas(bmp.width, bmp.height);
@@ -126,6 +193,24 @@ export function getSourceTexture(ref, { linear = false } = {}) {
     fillTexture(tex, glowPixels(), linear);
   }).finally(() => { tex.userData.pending = false; if (tex.userData.onLoad) for (const fn of tex.userData.onLoad) fn(); });
   return tex;
+}
+/**
+ * One frame of an animated .vtf (frame = $frame / $detailframe value; wraps like PAC3: |frame| mod frames).
+ * Frames are decoded once, on first use.
+ */
+export function textureFrame(tex, frame) {
+  const n = tex && tex.userData.frames;
+  if (!n || n < 2 || !tex.userData.frameSource) return tex;
+  const i = Math.floor(Math.abs(Number(frame) || 0)) % n;
+  if (i === 0) return tex;
+  const list = (tex.userData.frameTex ||= []);
+  if (!list[i]) {
+    const { bytes, linear } = tex.userData.frameSource;
+    const img = decodeVTF(bytes, { frame: i });
+    list[i] = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    fillTexture(list[i], { data: img.rgba, width: img.width, height: img.height }, linear);
+  }
+  return list[i];
 }
 /** Forget failed lookups (call after mounting new folders). */
 export function clearFailedAssets() {
@@ -145,6 +230,7 @@ export async function materialDesc(vmtPath) {
   return {
     name,
     shader: vmt.shader,
+    params: p, // every $parameter, for Source shading (shading.js)
     map: p.$basetexture ? getSourceTexture(p.$basetexture) : null,
     normalMap: p.$bumpmap && !flag('$ssbump') ? getSourceTexture(p.$bumpmap, { linear: true }) : null,
     alphaTest: flag('$alphatest') ? Number(p.$alphatestreference || 0.5) || 0.5 : 0,
@@ -167,12 +253,13 @@ export function loadSourceModel(path) {
   const key = normPath(path);
   if (modelCache.has(key)) return modelCache.get(key);
   const p = (async () => {
-    if (!vfs.mounted) throw new Error('Mount your Garry\'s Mod folder (File → Game content) to load .mdl models');
+    const pack = PACK_PATH.exec(key);
+    if (!vfs.mounted && !pack) throw new Error('Mount your Garry\'s Mod folder (File → Game content) to load .mdl models');
     const base = key.replace(/\.mdl$/, '');
-    const mdl = await vfs.read(`${base}.mdl`);
-    if (!mdl) throw new Error(`Model not found in mounted content: ${key}`);
-    const vvd = await vfs.read(`${base}.vvd`);
-    const vtx = (await vfs.read(`${base}.dx90.vtx`)) || (await vfs.read(`${base}.dx80.vtx`)) || (await vfs.read(`${base}.sw.vtx`));
+    const mdl = await readAsset(`${base}.mdl`);
+    if (!mdl) throw new Error(pack ? `${fileName(key)} is missing from the downloaded zip` : `Model not found in mounted content: ${key}`);
+    const vvd = await readAsset(`${base}.vvd`);
+    const vtx = (await readAsset(`${base}.dx90.vtx`)) || (await readAsset(`${base}.dx80.vtx`)) || (await readAsset(`${base}.sw.vtx`));
     if (!vvd || !vtx) throw new Error(`Model is missing its .vvd/.vtx files: ${key}`);
     const parsed = parseSourceModel({ mdl, vvd, vtx });
     const geoms = parsed.meshes.map((m) => {
@@ -196,7 +283,8 @@ export function loadSourceModel(path) {
       return { geometry: g, material: m.material, bodyPart: m.bodyPart, model: m.model };
     });
     const descs = parsed.mdl.textures.map(async (_, i) => {
-      const cands = materialPaths(parsed.mdl, i);
+      // a pack's own materials first, then the game's (a pack model may use stock materials)
+      const cands = [...(pack ? [`materials/pac_url/${pack[1]}/${fileName(parsed.mdl.textures[i])}.vmt`] : []), ...materialPaths(parsed.mdl, i)];
       for (const c of cands) if (await loadVmt(c)) return materialDesc(c);
       return { name: parsed.mdl.textures[i].split(/[\\/]/).pop().toLowerCase(), missing: true };
     });
@@ -248,9 +336,9 @@ export function loadAnimSet(path) {
   const key = normPath(path);
   if (animCache.has(key)) return animCache.get(key);
   const p = (async () => {
-    const mdl = await vfs.read(key);
+    const mdl = await readAsset(key);
     if (!mdl) throw new Error(`Animations not found: ${key}`);
-    const ani = await vfs.read(key.replace(/\.mdl$/, '.ani'));
+    const ani = await readAsset(key.replace(/\.mdl$/, '.ani'));
     return { path: key, ...parseAnimModel(mdl, ani) };
   })();
   animCache.set(key, p);

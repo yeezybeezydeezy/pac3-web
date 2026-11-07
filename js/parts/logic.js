@@ -74,7 +74,7 @@ export class ProxyPart extends Part {
     prop('TargetPart', 'part', ''),
     prop('AffectChildren', 'boolean', false, { help: 'Drive this proxy\'s children instead of its parent.' }),
     prop('Axis', 'enum', '', { options: ['', 'x', 'y', 'z'], help: 'For vectors/angles/colors: drive one component (x/y/z = pitch/yaw/roll = r/g/b).' }),
-    prop('Additive', 'boolean', false, { help: 'Add to the stored value instead of replacing it.' }),
+    prop('Additive', 'boolean', false, { help: 'Every frame, add the output to a running total and write the total (like PAC3; makes counters such as frame numbers).' }),
     prop('Input', 'enum', 'time', { group: 'easy setup', options: PROXY_INPUT_NAMES }),
     prop('Function', 'enum', 'sin', { group: 'easy setup', options: Object.keys(EASY_FUNCTIONS) }),
     prop('InputMultiplier', 'number', 1, { group: 'easy setup', step: 0.1 }),
@@ -142,6 +142,12 @@ export class ProxyPart extends Part {
     if (!name) { this.status = 'Pick a VariableName (property to drive).'; return; }
     if (!targets.length) { this.status = 'No target: put the proxy inside the part to drive.'; return; }
     let ok = 0;
+    const a = this.Additive;
+    if (a) {
+      const acc = (this._acc ||= [0, 0, 0]);
+      for (let i = 0; i < 3; i++) acc[i] += values.length >= 3 ? values[i] : i === 0 || values.length === 1 ? values[0] : 0;
+    }
+    const out = a ? this._acc : values;
     for (const t of targets) {
       if (t === this) continue;
       const def = t.constructor.getProp(name);
@@ -149,18 +155,17 @@ export class ProxyPart extends Part {
       const key = `${t.UniqueID}|${name}`;
       const base = touched.has(key) ? t[name] : t.getStored(name);
       let v;
-      const a = this.Additive;
       if (def.type === 'number') {
-        v = (a ? base : 0) + values[0];
+        v = out[0];
         if (def.min != null) v = Math.max(def.min, v);
         if (def.max != null) v = Math.min(def.max, v);
-      } else if (def.type === 'boolean') v = values[0] >= 0.5;
-      else if (def.type === 'string' || def.type === 'text') v = String(Number(values[0].toFixed(3)));
+      } else if (def.type === 'boolean') v = out[0] >= 0.5;
+      else if (def.type === 'string' || def.type === 'text') v = String(Number(out[0].toFixed(3)));
       else {
         v = base.slice();
         const ax = AXES[this.Axis];
-        if (ax != null) v[ax] = (a ? v[ax] : 0) + values[0];
-        else for (let i = 0; i < 3; i++) v[i] = (a ? v[i] : 0) + (values.length >= 3 ? values[i] : values[0]);
+        if (ax != null) v[ax] = out[0];
+        else for (let i = 0; i < 3; i++) v[i] = out.length >= 3 || a ? out[i] : out[0];
       }
       t.setProxied(name, v);
       touched.set(key, { part: t, name });

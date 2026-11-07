@@ -34,6 +34,7 @@ Chrome's folder picker ("Choose folder…") refuses anything inside `Program Fil
 - Models (`.mdl`/`.vvd`/`.vtx`), materials (`.vmt`, including `patch`), textures (`.vtf`, DXT and uncompressed formats) and sounds (`.wav` including ADPCM, `.mp3`, `.ogg`) load by their game paths, e.g. `models/player/items/humans/top_hat.mdl`. `.vtf` URLs work too.
 - An **entity** part can swap the avatar for any playermodel. It plays that model's own animation set (`$includemodel`, e.g. `m_anm.mdl`, `f_anm.mdl`, `z_anm.mdl`): idle, walk/run blends, crouch, jump, swim, sit and taunts. Animation parts accept any of its sequence names.
 - **Import PAC3 outfits** straight from `garrysmod/data/pac3/*.txt`: parts, events, proxies (including `Extra1-5`/`var1()`), `material_3d` settings and per-slot `Materials` lists are converted.
+- **Links in outfits download automatically**, like in PAC3: zipped `.mdl` models (PAC3 "URL models", including playermodels), `.obj`/`.glb`/`.gltf` models, `.vtf` and image textures, sounds and custom animations. Dropbox, Google Drive, GitHub, GitLab, Pastebin and OneDrive share links are rewritten to direct downloads the same way PAC3 does. The host has to allow cross-origin downloads (GitHub, GitHub Pages and Dropbox do).
 - Chrome and Edge remember mounted folders between visits; other browsers use a folder-upload dialog.
 
 ### Same skeleton as Source

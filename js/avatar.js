@@ -5,8 +5,10 @@
 import * as THREE from 'three';
 import { clamp, lerp, smoothstep, setColor, DEG } from './core/util.js';
 import { getTexture } from './core/textures.js';
-import { loadSourceModel, loadAnimSet, toOurs, quatToOurs, mat34ToOurs, friendlyBoneName, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList, vfs } from './source/assets.js';
+import { loadSourceModel, resolveModelRef, loadAnimSet, toOurs, quatToOurs, mat34ToOurs, friendlyBoneName, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList, vfs } from './source/assets.js';
 import { buildMannequinAsset } from './mannequin.js';
+import { sourceParams, applySourceShading, clearSourceShading } from './source/shading.js';
+import { textureFrame } from './source/assets.js';
 
 const TAU = Math.PI * 2;
 const S = Math.sin;
@@ -258,7 +260,7 @@ export class Avatar {
     this.playerModelStatus = '';
     if (!path) { this._buildSource(this.mannequin, 0); return; }
     try {
-      const asset = await loadSourceModel(path);
+      const asset = await loadSourceModel(await resolveModelRef(path));
       if (token !== this._pmToken) return;
       this._buildSource(asset, skin, modifiers);
     } catch (e) {
@@ -297,6 +299,7 @@ export class Avatar {
       mesh.frustumCulled = false;
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.userData.materialName = desc.name || '';
+      if (desc.params) mesh.userData.src = sourceParams((k) => desc.params[`$${k}`], { shader: desc.shader, vmt: true });
       group.add(mesh);
       meshes.push(mesh);
     }
@@ -545,21 +548,41 @@ export class Avatar {
     const c = new THREE.Color();
     for (const mesh of this.source.meshes) {
       const m = mesh.material;
-      const o = (mesh.userData.orig ||= { map: m.map, normalMap: m.normalMap, color: m.color.clone(), emissive: m.emissive.clone(), emissiveMap: m.emissiveMap, roughness: m.roughness, metalness: m.metalness, transparent: m.transparent });
+      const o = (mesh.userData.orig ||= { map: m.map, normalMap: m.normalMap, color: m.color.clone(), emissive: m.emissive.clone(), emissiveMap: m.emissiveMap, roughness: m.roughness, metalness: m.metalness, transparent: m.transparent, alphaTest: m.alphaTest, side: m.side });
       const mp = (a.materials || []).find((x) => x.matches(mesh.userData.materialName)) || null;
-      m.map = mp && mp.BaseTexture ? getTexture(mp.BaseTexture) : a.material ? getTexture(a.material) : o.map;
-      m.normalMap = mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
+      // Source shading: a material part with a Shader, else the playermodel's own .vmt
+      const P = mp ? (mp.Shader ? sourceParams((k) => mp.params[k], { shader: mp.Shader }) : null) : a.material ? null : mesh.userData.src || null;
+      if (P) {
+        m.map = P.base ? textureFrame(P.base, P.baseFrame) : o.map;
+        m.normalMap = mp ? (P.bump ? textureFrame(P.bump, P.bumpFrame) : null) : P.bump ? textureFrame(P.bump, P.bumpFrame) : o.normalMap;
+        m.color.setRGB(P.color[0], P.color[1], P.color[2], THREE.SRGBColorSpace).multiply(setColor(c, a.color, a.brightness));
+        m.opacity = a.alpha * P.alpha;
+        m.transparent = P.translucent || P.additive || m.opacity < 1;
+        m.alphaTest = P.alphatest ? P.alphatestref : 0;
+        m.blending = P.additive ? THREE.AdditiveBlending : THREE.NormalBlending;
+        m.side = P.nocull ? THREE.DoubleSide : THREE.FrontSide;
+        m.depthWrite = !m.transparent || m.alphaTest > 0;
+        applySourceShading(m, P);
+        if (P.detail || (P.base && P.base.userData.frames > 1)) this._appearanceKey = ''; // keep animated frames and pending textures updating
+      } else {
+        clearSourceShading(m);
+        m.map = mp && mp.BaseTexture ? getTexture(mp.BaseTexture) : a.material ? getTexture(a.material) : o.map;
+        m.normalMap = mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
+        m.color.copy(o.color).multiply(setColor(c, a.color, a.brightness));
+        if (mp) m.color.multiply(setColor(c, mp.Color));
+        m.roughness = mp ? mp.Roughness : o.roughness;
+        m.metalness = mp ? mp.Metalness : o.metalness;
+        if (mp) { setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); m.emissiveMap = null; } else { m.emissive.copy(o.emissive); m.emissiveMap = o.emissiveMap; }
+        m.opacity = a.alpha * (mp ? mp.Alpha : 1);
+        m.transparent = o.transparent || m.opacity < 1;
+        m.alphaTest = o.alphaTest || 0;
+        m.blending = THREE.NormalBlending;
+        m.side = o.side;
+        m.depthWrite = m.opacity >= 1;
+      }
       if (m.normalMap) m.normalScale.set(1, -1);
-      m.color.copy(o.color).multiply(setColor(c, a.color, a.brightness));
-      if (mp) m.color.multiply(setColor(c, mp.Color));
-      m.roughness = mp ? mp.Roughness : o.roughness;
-      m.metalness = mp ? mp.Metalness : o.metalness;
-      if (mp) { setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); m.emissiveMap = null; } else { m.emissive.copy(o.emissive); m.emissiveMap = o.emissiveMap; }
-      m.opacity = a.alpha * (mp ? mp.Alpha : 1);
-      m.transparent = o.transparent || m.opacity < 1;
-      m.depthWrite = m.opacity >= 1;
-      m.wireframe = a.wireframe || !!(mp && mp.Wireframe);
-      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.transparent}`;
+      m.wireframe = a.wireframe || !!(mp && mp.Wireframe) || !!(P && P.wireframe);
+      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.transparent}|${m.alphaTest > 0}|${m.side}|${!!P}`;
       if (sig !== mesh.userData.sig) { mesh.userData.sig = sig; m.needsUpdate = true; }
     }
   }

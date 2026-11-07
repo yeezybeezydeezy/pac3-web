@@ -116,20 +116,10 @@ export function importPac3(text) {
           self.Hide = true;
         }
         break;
-      case 'material': {
-        // Source shader parameters (lowercase keys) -> material part
-        const p = n.self;
-        if (p.basetexture) self.BaseTexture = String(p.basetexture);
-        if (p.bumpmap) self.BumpMap = String(p.bumpmap);
-        const tint = vec(p.color2) || vec(p.color);
-        if (tint) self.Color = tint.map((x) => Math.min(1, x));
-        if (p.alpha != null) self.Alpha = Number(p.alpha);
-        if (p.selfillum) self.Emissive = vec(p.selfillumtint) || [0.6, 0.6, 0.6];
-        self.Roughness = p.phong ? Math.max(0.15, 0.5 - Number(p.phongboost || 1) * 0.08) : 0.75;
-        if (p.envmap) self.Metalness = 0.3;
-        if (p.detail) warnings.add('Material detail textures are not supported');
+      case 'material':
+        // PAC3's shader parameters keep their names; the class picks the Source shader
+        self.Shader = { material_2d: 'UnlitGeneric', material_refract: 'Refract', material_eye_refract: 'EyeRefract' }[pacClass] || 'VertexLitGeneric';
         break;
-      }
       case 'proxy': {
         const target = self.TargetPart ? byId.get(self.TargetPart) : self.AffectChildren ? null : parentOf.get(n);
         const tcls = classOf(target);
@@ -142,9 +132,6 @@ export function importPac3(text) {
         }
         if (tcls && COLOR255[tcls] && COLOR255[tcls].includes(name)) wrap('div255');
         if (tcls === 'particles' && (name === 'Color1' || name === 'Color2')) self.VariableName = name === 'Color1' ? 'StartColor' : 'EndColor';
-        // Source shader parameters driven on material parts
-        const MAT_PARAMS = { basetexture: 'BaseTexture', bumpmap: 'BumpMap', color2: 'Color', color: 'Color', alpha: 'Alpha', selfillumtint: 'Emissive' };
-        if (tcls === 'material' && MAT_PARAMS[name.toLowerCase()]) self.VariableName = MAT_PARAMS[name.toLowerCase()];
         break;
       }
       default:

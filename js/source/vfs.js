@@ -304,6 +304,12 @@ export class VFS {
         else if (name.endsWith('.gma')) n += await this._mountGma(e, `addons/${name}`);
       }
     }
+    // what servers sent: Workshop addons (cache/workshop/*.gma) and FastDL files (download/)
+    const cache = kids.get('cache');
+    const cws = cache && cache.kind === 'directory' ? (await this._children(cache)).get('workshop') : null;
+    if (cws && cws.kind === 'directory') for (const [name, e] of await this._children(cws)) if (e.kind === 'file' && name.endsWith('.gma')) n += await this._mountGma(e, `cache/workshop/${name}`);
+    const dl = kids.get('download');
+    if (dl && dl.kind === 'directory') { this._push(new FolderMount(dl, `${label}/download`)); n++; }
     n += await this._mountVpks(g, label);
     return n;
   }

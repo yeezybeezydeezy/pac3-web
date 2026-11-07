@@ -1,6 +1,6 @@
 // Procedural textures (generated on canvases) plus URL textures. Single entry point: getTexture().
 import * as THREE from 'three';
-import { isUrl } from './util.js';
+import { isUrl, fixUrl } from './util.js';
 import { getSourceTexture, isGamePath } from '../source/assets.js';
 
 const cache = new Map();
@@ -98,7 +98,7 @@ export function getTexture(name, opts = {}) {
   if (cache.has(name)) return cache.get(name);
   let tex = null;
   if (isUrl(name)) {
-    tex = loader.load(name, undefined, undefined, () => console.warn('[pac3] failed to load texture', name.slice(0, 120)));
+    tex = loader.load(fixUrl(name, 'image'), undefined, undefined, () => console.warn('[pac3] failed to load texture', name.slice(0, 120)));
   } else if (Object.hasOwn(GENERATORS, name.toLowerCase())) {
     tex = new THREE.CanvasTexture(GENERATORS[name.toLowerCase()]());
   } else return null;

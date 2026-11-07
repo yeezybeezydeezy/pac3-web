@@ -11,7 +11,8 @@ function tokenize(text) {
     if (c === '{' || c === '}') { out.push(c); i++; continue; }
     if (c === '"') {
       let j = i + 1, s = '';
-      while (j < n && text[j] !== '"') { if (text[j] === '\\' && j + 1 < n) { s += text[j + 1] === 'n' ? '\n' : text[j + 1]; j += 2; } else s += text[j++]; }
+      // no escape sequences: materials use \ as a path separator (Source reads them the same way)
+      while (j < n && text[j] !== '"') s += text[j++];
       out.push({ s });
       i = j + 1;
       continue;

@@ -27,6 +27,32 @@ export function deepEqual(a, b) {
 // Only these URL schemes may be used for loading assets.
 export const isUrl = (s) => typeof s === 'string' && /^(https?:|data:|blob:)/i.test(s.trim());
 
+/**
+ * PAC3's link fix-ups (pac.FixUrl): share-page links from Dropbox, Google Drive, GitHub, GitLab,
+ * Pastebin and OneDrive become direct downloads. Other links are returned trimmed.
+ */
+export function fixUrl(url, kind = '') {
+  let u = String(url || '').trim().replace(/["'<>\n\\]+/g, '');
+  if (!/^https?:/i.test(u)) return u;
+  if (/dropbox/i.test(u)) {
+    return u.replace(/^http:\/\/dl\.dropboxusercontent\.com\//i, 'https://dl.dropboxusercontent.com/')
+      .replace(/^https?:\/\/dl\.dropbox\.com\//i, 'https://www.dropbox.com/')
+      .replace(/^https?:\/\/www\.dropbox\.com\/s\/(.+?)\?dl=[01]$/i, 'https://dl.dropboxusercontent.com/s/$1')
+      .replace(/^https?:\/\/www\.dropbox\.com\/(s|scl)\/(.+)$/i, 'https://dl.dropboxusercontent.com/$1/$2');
+  }
+  if (/drive\.google\.com/i.test(u)) {
+    const id = (/\/file\/d\/([^/?#]+)/.exec(u) || /[?&]id=([^&#]+)/.exec(u) || [])[1];
+    if (!id) return u;
+    return kind === 'image' ? `https://drive.google.com/thumbnail?id=${id}&sz=s2048` : `https://drive.google.com/uc?export=download&id=${id}`;
+  }
+  if (/gitlab\.com/i.test(u)) return u.replace(/\/blob\//, '/raw/');
+  // github.com/<user>/<repo>/blob|raw/<branch>/<path> -> raw.githubusercontent.com (github.com's own redirect has no CORS)
+  u = u.replace(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/i, 'https://raw.githubusercontent.com/$1/$2/$3');
+  u = u.replace(/^http:\/\/onedrive\.live\.com\/redir\?/i, 'https://onedrive.live.com/download?');
+  u = u.replace(/pastebin\.com\/([a-zA-Z0-9]+)$/, 'pastebin.com/raw/$1');
+  return u;
+}
+
 const _euler = new THREE.Euler();
 // PAC-style angles [pitch, yaw, roll] in degrees -> quaternion.
 export function anglesToQuat(a, q = new THREE.Quaternion()) {

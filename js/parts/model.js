@@ -8,8 +8,10 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MovablePart, applyBlend, BLEND_MODES } from './movable.js';
 import { prop, registerPart } from '../core/part.js';
 import { getTexture, SURFACE_TEXTURES } from '../core/textures.js';
-import { isUrl, setColor } from '../core/util.js';
-import { loadSourceModel, isSourceModelPath, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList } from '../source/assets.js';
+import { isUrl, setColor, fixUrl } from '../core/util.js';
+import { sourceParams, applySourceShading, clearSourceShading } from '../source/shading.js';
+import { textureFrame } from '../source/assets.js';
+import { loadSourceModel, isSourceModelRef, isModelPackUrl, resolveModelRef, skinMaterial, parseModelModifiers, bodygroupModel, bodygroupList } from '../source/assets.js';
 
 const TAU = Math.PI * 2;
 
@@ -72,13 +74,15 @@ const gltfLoader = new GLTFLoader().setDRACOLoader(draco).setMeshoptDecoder(Mesh
 const objLoader = new OBJLoader();
 const assetCache = new Map();
 const isObj = (url) => /\.obj(\?|#|$)/i.test(url) || /^data:model\/obj/i.test(url);
-export function loadModelAsset(url) {
-  if (assetCache.has(url)) return assetCache.get(url);
-  const p = isObj(url)
+export function loadModelAsset(url, forceObj = false) {
+  url = fixUrl(url);
+  const key = `${forceObj ? 'obj|' : ''}${url}`;
+  if (assetCache.has(key)) return assetCache.get(key);
+  const p = forceObj || isObj(url)
     ? objLoader.loadAsync(url).then((scene) => ({ scene, animations: [], unitScale: 1 }))
     : gltfLoader.loadAsync(url).then((g) => ({ scene: g.scene, animations: g.animations || [], unitScale: 39.37 })); // glTF is in meters
-  p.catch(() => assetCache.delete(url));
-  assetCache.set(url, p);
+  p.catch(() => assetCache.delete(key));
+  assetCache.set(key, p);
   return p;
 }
 
@@ -149,7 +153,7 @@ export class ModelPart extends MovablePart {
 
   getChildBoneNames() { return Object.keys(this.modelBones); }
   /** Bodygroups of the loaded Source model, for the editor. */
-  getBodygroups() { return this.sourceModel && isSourceModelPath(this.Model) ? bodygroupList(this.sourceModel) : []; }
+  getBodygroups() { return this.sourceModel && isSourceModelRef(this.Model) ? bodygroupList(this.sourceModel) : []; }
   getAnchorFor(child) { return (child.Bone && this.modelBones[child.Bone.toLowerCase()]) || this.childAnchor; }
 
   _applyScale() { const s = this.Size; this.content.scale.set(s * this.Scale[0], s * this.Scale[1], s * this.Scale[2]); }
@@ -174,6 +178,8 @@ export class ModelPart extends MovablePart {
       };
       if (extra) {
         Object.assign(orig, { map: extra.map || null, normalMap: extra.normalMap || null, name: extra.name || '', alphaTest: extra.alphaTest || 0, translucent: !!extra.translucent, additive: !!extra.additive, doubleSide: !!extra.doubleSide, unlit: !!extra.unlit, selfIllum: !!extra.selfIllum, source: true });
+        // the .vmt's own Source shading (detail layer, self-illumination, phong…)
+        if (extra.params) orig.src = sourceParams((k) => extra.params[`$${k}`], { shader: extra.shader, vmt: true });
         orig.color = extra.color ? new THREE.Color().setRGB(extra.color[0], extra.color[1], extra.color[2], THREE.SRGBColorSpace) : new THREE.Color(1, 1, 1);
       }
       const slot = Array.isArray(mesh.material)
@@ -201,9 +207,9 @@ export class ModelPart extends MovablePart {
       this.status = '';
       return;
     }
-    if (isSourceModelPath(name)) {
-      this.status = 'Loading model…';
-      loadSourceModel(name).then((asset) => {
+    if (isSourceModelRef(name)) {
+      this.status = isModelPackUrl(name) ? 'Downloading model…' : 'Loading model…';
+      resolveModelRef(name).then(loadSourceModel).then((asset) => {
         if (token !== this._loadToken) return;
         this.sourceModel = asset.mdl;
         const mods = parseModelModifiers(this.ModelModifiers);
@@ -221,9 +227,11 @@ export class ModelPart extends MovablePart {
       }).catch((err) => { if (token === this._loadToken) this.status = String(err.message || err).slice(0, 200); });
       return;
     }
-    if (!isUrl(name)) { this.status = name ? `Unknown model "${name.slice(0, 60)}"` : ''; return; }
+    // PAC3 marks OBJ links without a .obj extension as objhttp://… or obj:http…
+    const objUrl = /^obj:?(?=https?:)/i.test(name) ? name.replace(/^obj:?/i, '') : null;
+    if (!isUrl(name) && !objUrl) { this.status = name ? `Unknown model "${name.slice(0, 60)}"` : ''; return; }
     this.status = 'Loading model…';
-    loadModelAsset(name).then((asset) => {
+    loadModelAsset(objUrl || name, !!objUrl).then((asset) => {
       if (token !== this._loadToken) return;
       const obj = SkeletonUtils.clone(asset.scene);
       obj.scale.setScalar(asset.unitScale);
@@ -247,7 +255,7 @@ export class ModelPart extends MovablePart {
 
   onPropChanged(name, old) {
     super.onPropChanged(name, old);
-    if (name === 'Model' || ((name === 'Skin' || name === 'ModelModifiers') && isSourceModelPath(this.Model))) this._load();
+    if (name === 'Model' || ((name === 'Skin' || name === 'ModelModifiers') && isSourceModelRef(this.Model))) this._load();
     else if (name === 'Size' || name === 'Scale') this._applyScale();
     else this._dirty = true;
   }
@@ -266,14 +274,17 @@ export class ModelPart extends MovablePart {
       const o = slot.orig;
       const entry = slotList[o.index] || null;
       const mp = mps.find((p) => p.matches(o.name)) || (entry && entry.part) || null;
-      const overrideTex = (mp && mp.BaseTexture ? getTexture(mp.BaseTexture) : null) || (entry && entry.texture ? getTexture(entry.texture) : null) || baseTex;
-      let shading = this.NoLighting || special === 'glow' || o.unlit ? 'unlit' : special === 'toon' ? 'toon' : special === 'normals' ? 'normals' : 'standard';
-      if (mp && mp.Shading !== 'default') shading = mp.Shading;
+      // Source shading: a material part with a Shader, else the game material's own (.vmt) settings
+      const P = mp ? mp.sourceParams() : special ? null : o.src || null;
+      const srcBase = P && P.base ? textureFrame(P.base, P.baseFrame) : null;
+      const overrideTex = srcBase || (mp && !P && mp.BaseTexture ? getTexture(mp.BaseTexture) : null) || (entry && entry.texture ? getTexture(entry.texture) : null) || baseTex;
+      let shading = this.NoLighting || special === 'glow' || o.unlit || (P && P.unlit) ? 'unlit' : special === 'toon' ? 'toon' : special === 'normals' ? 'normals' : 'standard';
+      if (mp && !P && mp.Shading !== 'default') shading = mp.Shading;
       const Cls = MAT_CLASSES[shading];
-      let alpha = this.Alpha * (mp ? mp.Alpha : 1);
+      let alpha = this.Alpha * (P ? P.alpha : mp ? mp.Alpha : 1);
       if (special === 'glass') alpha *= 0.35;
-      const blend = this.BlendMode === 'normal' && o.additive ? 'additive' : this.BlendMode;
-      const transparent = alpha < 1 || this.Translucent || blend !== 'normal' || !!o.translucent;
+      const blend = this.BlendMode === 'normal' && (P ? P.additive : o.additive) ? 'additive' : this.BlendMode;
+      const transparent = alpha < 1 || this.Translucent || blend !== 'normal' || !!(P ? P.translucent : o.translucent);
       const rep = this.TextureScale * (mp ? mp.TextureScale : 1);
       const scroll = mp ? mp.scroll : null;
 
@@ -291,34 +302,42 @@ export class ModelPart extends MovablePart {
         }
       }
       if ('map' in m) m.map = tex || null;
-      const nrm = mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
+      const nrm = P && mp ? (P.bump ? textureFrame(P.bump, P.bumpFrame) : null) : P && P.bump ? textureFrame(P.bump, P.bumpFrame) : mp && mp.BumpMap ? getTexture(mp.BumpMap, { linear: true }) : o.normalMap;
       if ('normalMap' in m) {
         m.normalMap = shading === 'standard' ? nrm || null : null;
         if (m.normalMap && (o.source || (mp && mp.BumpMap))) m.normalScale.set(1, -1); // Source normal maps are DirectX style
       }
       if (m.color) {
         setColor(m.color, this.Color, this.Brightness);
-        if (!overrideTex) m.color.multiply(o.color);
-        if (mp) m.color.multiply(setColor(_c, mp.Color));
+        if (P) m.color.multiply(_c.setRGB(P.color[0], P.color[1], P.color[2], THREE.SRGBColorSpace));
+        else {
+          if (!overrideTex) m.color.multiply(o.color);
+          if (mp) m.color.multiply(setColor(_c, mp.Color));
+        }
       }
-      if (m.isMeshStandardMaterial) {
+      if (m.isMeshStandardMaterial && !P) {
         m.roughness = mp ? mp.Roughness : special === 'chrome' ? 0.08 : special === 'glass' ? 0.04 : this.Roughness;
         m.metalness = mp ? mp.Metalness : special === 'chrome' ? 1 : this.Metalness;
         if (mp) setColor(m.emissive, mp.Emissive, mp.EmissiveIntensity); else if (o.selfIllum) m.emissive.setRGB(1, 1, 1); else m.emissive.setRGB(0, 0, 0);
         m.emissiveMap = o.selfIllum && !mp ? tex || null : null;
       }
       if ('flatShading' in m) m.flatShading = !!(mp && mp.FlatShading);
-      m.wireframe = special === 'wireframe' || !!(mp && mp.Wireframe);
+      m.wireframe = special === 'wireframe' || !!(mp && mp.Wireframe) || !!(P && P.wireframe);
       m.opacity = alpha;
       m.transparent = transparent;
-      m.alphaTest = o.alphaTest || 0;
+      m.alphaTest = P ? (P.alphatest ? P.alphatestref : 0) : o.alphaTest || 0;
       applyBlend(m, blend);
-      m.depthTest = !this.IgnoreZ;
-      m.depthWrite = !transparent || !!o.alphaTest;
-      m.side = this.Invert ? THREE.BackSide : this.NoCulling || o.flat || o.doubleSide ? THREE.DoubleSide : THREE.FrontSide;
+      m.depthTest = !this.IgnoreZ && !(P && P.ignorez);
+      m.depthWrite = !transparent || !!m.alphaTest;
+      m.side = this.Invert ? THREE.BackSide : this.NoCulling || o.flat || (P ? P.nocull : o.doubleSide) ? THREE.DoubleSide : THREE.FrontSide;
+      if (P && (m.isMeshStandardMaterial || m.isMeshBasicMaterial)) {
+        const d = applySourceShading(m, P);
+        if (d && d.userData.pending) this._dirty = true;
+        if (P.detail || (P.base && P.base.userData.frames > 1) || (P.bump && P.bump.userData.frames > 1)) this._dirty = true; // animated frames
+      } else clearSourceShading(m);
       m.clippingPlanes = clips.length ? clips : null;
       m.clipShadows = true;
-      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.alphaTest > 0}|${m.flatShading}|${clips.length}|${m.premultipliedAlpha}|${m.side}|${m.transparent}`;
+      const sig = `${!!m.map}|${!!m.normalMap}|${!!m.emissiveMap}|${m.alphaTest > 0}|${m.flatShading}|${clips.length}|${m.premultipliedAlpha}|${m.side}|${m.transparent}|${!!P}`;
       if (sig !== slot.sig) { slot.sig = sig; m.needsUpdate = true; }
       slot.mesh.renderOrder = this.IgnoreZ ? 1000 : transparent ? 1 : 0;
       slot.mesh.castShadow = alpha >= 0.5 && shading !== 'unlit';
