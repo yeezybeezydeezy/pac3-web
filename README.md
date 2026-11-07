@@ -26,7 +26,9 @@ It runs entirely in the browser with no build step (plain ES modules + [three.js
 
 ## Your Garry's Mod content (no uploading)
 
-**File → Game content** mounts folders from your own computer: pick your `GarrysMod` folder, or your Steam `steamapps` folder to include Workshop items too. Everything is read locally in your browser; nothing is uploaded and no game files are part of this site.
+**File → Game content** mounts folders from your own computer: drag your Steam `steamapps` folder (Garry's Mod plus Workshop items) or your `GarrysMod` folder into the window. Everything is read locally in your browser; nothing is uploaded and no game files are part of this site.
+
+Chrome's folder picker ("Choose folder…") refuses anything inside `Program Files`, which is where Steam installs by default ("can't open this folder because it contains system files"). Dragging the folder in works from any location; dropped folders have to be dropped again after a reload, while folders chosen with the picker are remembered.
 
 - Reads loose files, `.vpk` archives (Garry's Mod, HL2, CS:S content), Workshop `.gma` addons, and older LZMA-compressed `_legacy.bin` Workshop items (unpacked in a background worker).
 - Models (`.mdl`/`.vvd`/`.vtx`), materials (`.vmt`, including `patch`), textures (`.vtf`, DXT and uncompressed formats) and sounds (`.wav` including ADPCM, `.mp3`, `.ogg`) load by their game paths, e.g. `models/player/items/humans/top_hat.mdl`. `.vtf` URLs work too.

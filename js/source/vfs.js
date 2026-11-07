@@ -1,5 +1,5 @@
 // Virtual file system over the user's local game folders. Files are read on this machine only;
-// nothing is uploaded. Supports folders (File System Access API or <input webkitdirectory>),
+// nothing is uploaded. Supports folders (File System Access API, drag and drop, or <input webkitdirectory>),
 // VPK archives, Workshop .gma files and legacy LZMA-compressed _legacy.bin items.
 import { parseVpkDir, indexGma } from './archives.js';
 import { normPath } from './binary.js';
@@ -55,6 +55,26 @@ class FileListMount {
   async read(path) { const f = this.files.get(path); return f ? readBlob(f) : null; }
   async list(dir) { return listFromKeys(this.files.keys(), dir); }
   keys() { return this.files.keys(); }
+}
+
+/**
+ * A dropped FileSystemEntry (DataTransferItem.webkitGetAsEntry) in the shape of a File System Access
+ * handle, so dropped folders mount exactly like picked ones and are read lazily. "transient": entries
+ * only live until the page is reloaded, so they are never saved for the next visit.
+ */
+export function entryToHandle(entry) {
+  if (entry.isFile) return { kind: 'file', name: entry.name, getFile: () => new Promise((res, rej) => entry.file(res, rej)) };
+  return {
+    kind: 'directory', name: entry.name, transient: true,
+    async *entries() {
+      const reader = entry.createReader();
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) return;
+        for (const e of batch) yield [e.name, entryToHandle(e)];
+      }
+    },
+  };
 }
 
 class VpkMount {
@@ -164,7 +184,7 @@ export class VFS {
   }
   async addRoot(handle, persist) {
     if (this.roots.some((r) => r.handle && r.name === handle.name && r.state === 'mounted')) return;
-    const root = { id: `${handle.name}-${Date.now()}`, name: handle.name, handle, state: 'mounting', mountCount: 0, message: '' };
+    const root = { id: `${handle.name}-${Date.now()}`, name: handle.name, handle, transient: !!handle.transient, state: 'mounting', mountCount: 0, message: '' };
     this.roots.push(root);
     this._changed();
     try {
@@ -175,23 +195,51 @@ export class VFS {
     } catch (e) { root.state = 'error'; root.message = e.message; }
     this._changed();
   }
+  /**
+   * Mounts folders (or .gma files) dragged onto the page. Call webkitGetAsEntry() inside the drop
+   * event and pass the entries here; they stay readable after the event.
+   */
+  async addEntries(entries) {
+    for (const entry of entries) {
+      const handle = entryToHandle(entry);
+      if (entry.isDirectory) { await this.addRoot(handle, false); continue; }
+      const root = { id: `${entry.name}-${Date.now()}`, name: entry.name, transient: true, state: 'mounting', mountCount: 0, message: '' };
+      this.roots.push(root);
+      this._changed();
+      root.mountCount = await this._mountGma(handle, entry.name);
+      root.state = root.mountCount ? 'mounted' : 'error';
+      if (!root.mountCount) root.message = 'Not a readable .gma file';
+      this._changed();
+    }
+  }
   async addFileList(fileList) {
     const files = new Map();
     let top = '';
     for (const f of fileList) { const p = normPath(f.webkitRelativePath || f.name); files.set(p, f); top ||= p.split('/')[0]; }
-    const root = { id: `${top}-${Date.now()}`, name: top, state: 'mounting', mountCount: 0, message: '' };
+    // a whole steamapps folder: keep Garry's Mod and its Workshop items, not every other game's content
+    const keys = [...files.keys()];
+    if (keys.some((p) => /(^|\/)common\/garrysmod\//.test(p))) {
+      for (const p of keys) if ((/(^|\/)common\//.test(p) && !/(^|\/)common\/garrysmod\//.test(p)) || /(^|\/)workshop\/content\/(?!4000\/)/.test(p)) files.delete(p);
+    }
+    const root = { id: `${top}-${Date.now()}`, name: top, transient: true, state: 'mounting', mountCount: 0, message: '' };
     this.roots.push(root);
     this._changed();
     try {
-      let n = 0;
-      const prefixes = new Set();
+      let n = 0, skipped = 0;
+      const prefixes = new Set(), legacy = [];
       for (const p of files.keys()) {
         const m = /^(.*?)(models|materials|sound)\//.exec(p);
         if (m) prefixes.add(m[1]);
-        if (/\.gma$/.test(p)) { this._push(new GmaMount(p, files.get(p), await indexGma((o, l) => readBlob(files.get(p), o, l), files.get(p).size))); n++; }
-        else if (/_dir\.vpk$/.test(p)) { await this._mountVpkFromFiles(p, files); n++; }
+        // one unreadable archive should not stop the rest from mounting
+        try {
+          if (/\.gma$/.test(p)) { this._push(new GmaMount(p, files.get(p), await indexGma((o, l) => readBlob(files.get(p), o, l), files.get(p).size))); n++; }
+          else if (/_dir\.vpk$/.test(p)) { await this._mountVpkFromFiles(p, files); n++; }
+          else if (/_legacy\.bin$/.test(p)) legacy.push({ e: { getFile: async () => files.get(p) }, label: `${p} (legacy)` });
+        } catch (err) { skipped++; console.warn('[pac3] skipped', p, err); }
       }
+      if (skipped) root.message = `${skipped} unreadable archive(s) skipped`;
       for (const pre of prefixes) { this._push(new FileListMount(files, pre, `${top}/${pre}`)); n++; }
+      if (legacy.length) this._decompressLegacy(legacy);
       root.mountCount = n;
       root.state = 'mounted';
     } catch (e) { root.state = 'error'; root.message = e.message; }
@@ -227,6 +275,8 @@ export class VFS {
       return n;
     }
     if (dir('garrysmod')) {
+      const inner = await this._children(dir('garrysmod'));
+      if (inner.get('garrysmod') && inner.get('garrysmod').kind === 'directory') return this._detect(dir('garrysmod'), `${label}/GarrysMod`, depth + 1);
       n += await this._mountGameDir(dir('garrysmod'), `${label}/garrysmod`);
       const se = dir('sourceengine');
       if (se) n += await this._mountVpks(se, `${label}/sourceengine`);
@@ -317,7 +367,7 @@ export class VFS {
 
   async _persist() {
     if (!('indexedDB' in window)) return;
-    const handles = this.roots.filter((r) => r.handle && r.state === 'mounted').map((r) => r.handle);
+    const handles = this.roots.filter((r) => r.handle && !r.transient && r.state === 'mounted').map((r) => r.handle);
     try { await idbDo('readwrite', (s) => s.put(handles, 'roots')); } catch (e) { console.warn('[pac3] could not remember folders', e); }
   }
   async forget(root) {

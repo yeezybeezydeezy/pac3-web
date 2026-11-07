@@ -48,21 +48,46 @@ export function openGameContent(app, { tab = vfs.mounted ? 'browse' : 'folders',
       ? `${vfs.mounts.length} sources mounted · ${files.toLocaleString()} archived files indexed${vfs.pending ? ` · unpacking ${vfs.pending} older Workshop item(s)…` : ''}`
       : 'Nothing mounted yet.';
     rootList.replaceChildren(...vfs.roots.map((r) => h('div', { class: 'save-row' },
-      h('div', {}, h('b', { text: r.name }), h('div', { class: 'muted', text: r.state === 'mounted' ? `${r.mountCount} source(s)${r.message ? ` · ${r.message}` : ''}` : r.state === 'mounting' ? 'Scanning…' : r.message || r.state })),
+      h('div', {}, h('b', { text: r.name }), h('div', { class: 'muted', text: r.state === 'mounted' ? `${r.mountCount} source(s)${r.transient ? ' · until you reload' : ''}${r.message ? ` · ${r.message}` : ''}` : r.state === 'mounting' ? 'Scanning…' : r.message || r.state })),
       h('div', { class: 'row-btns' },
         r.state === 'needs-permission' ? h('button', { type: 'button', class: 'btn primary', text: 'Reconnect', onclick: () => vfs.reconnect(r) }) : null,
-        r.handle ? h('button', { type: 'button', class: 'btn', text: 'Forget', onclick: () => vfs.forget(r) }) : null))));
+        r.handle && !r.transient ? h('button', { type: 'button', class: 'btn', text: 'Forget', onclick: () => vfs.forget(r) }) : null))));
   };
   const fallback = h('input', { type: 'file', webkitdirectory: true, multiple: true, hidden: true });
   fallback.addEventListener('change', () => { if (fallback.files.length) vfs.addFileList(fallback.files); fallback.value = ''; });
+  const dropZone = h('div', { class: 'drop-zone' },
+    h('b', { text: 'Drag your steamapps or GarrysMod folder into this window' }),
+    h('span', { class: 'muted', text: 'Works wherever Steam is installed, including Program Files. Folders are read in place on this computer (nothing is uploaded); drop them again after reloading the page.' }));
+  const pickerHint = h('p', { class: 'notice', hidden: true, text: 'If Chrome said it "can\'t open this folder because it contains system files": its folder picker refuses everything inside Program Files, which is where Steam installs by default. Drag the folder into this window instead.' });
   panes.folders = h('div', { class: 'stack' },
-    h('p', {}, 'Pick your ', h('b', { text: 'GarrysMod' }), ' folder (…/steamapps/common/GarrysMod), your Steam ', h('b', { text: 'steamapps' }), ' folder to include Workshop items, or any addon folder. Files are read on this computer only; nothing is uploaded.'),
+    h('p', {}, 'Mount your ', h('b', { text: 'steamapps' }), ' folder (Garry\'s Mod plus Workshop items), your ', h('b', { text: 'GarrysMod' }), ' folder, a Workshop ', h('b', { text: 'content/4000' }), ' folder, or any addon folder or .gma file.'),
+    dropZone,
     h('div', { class: 'row-btns' },
-      vfs.supported ? h('button', { type: 'button', class: 'btn primary', text: 'Add game folder…', onclick: () => vfs.pickFolder().catch((e) => { if (e.name !== 'AbortError') toast(e.message, 'error'); }) }) : null,
-      h('button', { type: 'button', class: 'btn', text: vfs.supported ? 'Add folder (compatibility mode)…' : 'Add game folder…', title: 'Uses a folder upload dialog. Works in every browser but lists every file, so pick an addon or content folder rather than all of Garry\'s Mod.', onclick: () => fallback.click() }),
+      vfs.supported ? h('button', { type: 'button', class: 'btn', text: 'Choose folder…', title: 'Remembered between visits. Chrome refuses folders inside Program Files; drag those in instead.', onclick: () => vfs.pickFolder().catch((e) => { if (e.name === 'AbortError') pickerHint.hidden = false; else toast(e.message, 'error'); }) }) : null,
+      h('button', { type: 'button', class: 'btn', text: 'Folder upload dialog…', title: 'Also works for Program Files, but lists every file first: pick GarrysMod and steamapps/workshop/content/4000 separately, not all of steamapps.', onclick: () => fallback.click() }),
       fallback),
-    vfs.supported ? null : h('p', { class: 'muted', text: 'Tip: Chrome or Edge can remember your folders between visits and read big game folders faster.' }),
+    pickerHint,
     status, rootList);
+
+  // Dropping anywhere on the page while this dialog is open mounts the folder (and keeps the browser
+  // from navigating away to show it).
+  const hasFiles = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  const onDragOver = (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; dropZone.classList.add('over'); };
+  const onDragLeave = (e) => { if (!e.relatedTarget) dropZone.classList.remove('over'); };
+  const onDrop = (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dropZone.classList.remove('over');
+    // entries must be taken during the event; they stay readable afterwards
+    const entries = [...e.dataTransfer.items].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter((x) => x && (x.isDirectory || /\.gma$/i.test(x.name)));
+    if (!entries.length) { toast('Drop a folder (steamapps, GarrysMod, an addon) or .gma files.', 'error'); return; }
+    pickerHint.hidden = true;
+    show('folders');
+    vfs.addEntries(entries).catch((err) => toast(err.message, 'error'));
+  };
+  addEventListener('dragover', onDragOver);
+  addEventListener('dragleave', onDragLeave);
+  addEventListener('drop', onDrop);
 
   // ---------- browse ----------
   const kindSel = h('select', { class: 'field', 'aria-label': 'File type' }, Object.entries(KINDS).map(([k, v]) => h('option', { value: k, text: v.label })));
@@ -93,7 +118,7 @@ export function openGameContent(app, { tab = vfs.mounted ? 'browse' : 'folders',
       const l = await vfs.list(dir);
       const rows = [];
       if (dir) rows.push(h('button', { type: 'button', class: 'file-row dir', text: '⬑ ..', onclick: () => { dir = segs.slice(0, -1).join('/'); browse.refresh(); } }));
-      for (const d of l.dirs) rows.push(h('button', { type: 'button', class: 'file-row dir', text: `📁 ${d}`, onclick: () => { dir = dir ? `${dir}/${d}` : d; browse.refresh(); } }));
+      for (const d of l.dirs) rows.push(h('button', { type: 'button', class: 'file-row dir', text: `📁 ${d}`, title: d, onclick: () => { dir = dir ? `${dir}/${d}` : d; browse.refresh(); } }));
       for (const f of l.files) { const p = dir ? `${dir}/${f}` : f; if (k.test(p)) rows.push(fileRow(p, f)); }
       list.replaceChildren(...(rows.length ? rows : [h('p', { class: 'muted', text: 'Empty folder.' })]));
     },
@@ -108,7 +133,7 @@ export function openGameContent(app, { tab = vfs.mounted ? 'browse' : 'folders',
   let timer = 0;
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => browse.refresh(), 200); });
   kindSel.addEventListener('change', () => { dir = KINDS[kindSel.value].root; browse.refresh(); });
-  panes.browse = h('div', { class: 'stack' },
+  panes.browse = h('div', { class: 'browse-pane' },
     h('div', { class: 'browse-bar' }, kindSel, search),
     crumbs, list,
     h('p', { class: 'muted', text: pick ? 'Click a file to use it.' : 'Click a model to add it (or replace the selected model). Click a material to apply it to the selected part. Sounds go into the selected sound part.' }));
@@ -141,7 +166,7 @@ export function openGameContent(app, { tab = vfs.mounted ? 'browse' : 'folders',
   let close = () => {};
   const p = modal(pick ? 'Pick from game content' : 'Game content', body);
   close = () => { const o = body.closest('.overlay'); if (o) o.querySelector('.modal-title .icon-btn').click(); };
-  p.then(unsub);
+  p.then(() => { unsub(); removeEventListener('dragover', onDragOver); removeEventListener('dragleave', onDragLeave); removeEventListener('drop', onDrop); });
 }
 
 async function preview(app, path) {
